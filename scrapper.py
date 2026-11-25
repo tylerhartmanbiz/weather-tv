@@ -17,6 +17,13 @@ IMAGE_HOSTS = set()
 # players in an iframe are not supported, on purpose: that would load the other site.
 VIDEO_EXTENSIONS = (".m3u8", ".mp4")
 
+# The "Open" button's website lives in docs/config.json (the TV reads it from there, so
+# changing it never needs a reinstall). ./helper.sh open uses the same addresses to test.
+import json as _json, pathlib as _pathlib
+_CFG = _json.loads((_pathlib.Path(__file__).parent / "docs" / "config.json").read_text())
+OPEN_URL = _CFG["openUrl"]        # {imdb_id} becomes e.g. tt0993846
+OPEN_URL_TV = _CFG["openUrlTv"]   # + {season} and {episode}
+
 # How to SEARCH the site (used when someone searches on the TV). Don't write this by hand:
 # run ./helper.sh record, do one search in the browser, and it fills this in for you.
 # {query} is replaced by whatever the person searches for. You can still edit it.
@@ -233,6 +240,244 @@ def allowed_hosts(videos):
                   {urlparse(v["thumbnail"]).hostname for v in videos if v["thumbnail"]})
 
 
+# ---------- open (TV "Open" button: scrape the video from OPEN_URL for one IMDb title) ----------
+#
+# Safety, on top of the rules above:
+#   * Every request made here goes through safe_get(): https only, the hostname must resolve to
+#     PUBLIC internet addresses only (never your router, Mac, or anything on your Wi-Fi), and
+#     the connection is pinned to the address we checked, so a DNS trick can't swap it later.
+#     Redirects are followed by hand (max 3) and each hop is checked again.
+#   * The video itself is never downloaded. For HLS (.m3u8) we read only the small text
+#     playlists (size-capped, in memory) to learn which hosts the TV will need, and to check
+#     every part is https on a normal public hostname. Anything odd -> the video is refused.
+#   * If the page needs JavaScript, it runs only inside safe_browser.py (sandboxed Chromium,
+#     throwaway profile, popups closed, downloads refused, video bytes never fetched).
+
+import http.client
+import ipaddress
+import socket
+import ssl
+
+IMDB_ID_RE = re.compile(r"^tt\d{7,10}$")
+HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$")
+LOCAL_SUFFIXES = (".local", ".localhost", ".lan", ".home", ".internal", ".intranet", ".corp", ".arpa")
+PLAYLIST_MAX = 2_000_000
+MAX_STREAM_HOSTS = 12
+
+
+def safe_host(host):
+    """A normal public hostname (letters in the last part, so no raw IP addresses), or None."""
+    h = (host or "").lower().rstrip(".")
+    if not HOSTNAME_RE.match(h) or h == "localhost" or h.endswith(LOCAL_SUFFIXES):
+        return None
+    return h
+
+
+def public_ip(host):
+    infos = socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM)
+    addrs = [i[4][0].split("%")[0] for i in infos]
+    if not addrs or not all(ipaddress.ip_address(a).is_global for a in addrs):
+        raise ValueError(f"refusing {host}: not a public internet address")
+    return addrs[0]
+
+
+class _PinnedHTTPS(http.client.HTTPSConnection):
+    """HTTPS to `host`, but the TCP connection goes to the already-checked IP address.
+    The certificate is still verified against the real hostname."""
+
+    def __init__(self, host, ip):
+        super().__init__(host, 443, timeout=15, context=ssl.create_default_context())
+        self._ip = ip
+
+    def connect(self):
+        sock = socket.create_connection((self._ip, 443), self.timeout)
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+
+def safe_get(url, max_bytes, accept, same_site=None):
+    """GET a small text resource safely. Returns (final_url, text, hosts_visited)."""
+    hosts = set()
+    for _ in range(4):
+        p = urlparse(url)
+        host = safe_host(p.hostname)
+        if p.scheme != "https" or not host or p.port not in (None, 443) or p.username or p.password:
+            raise ValueError(f"refusing URL {url[:200]}")
+        if same_site and site_of(host) != same_site:
+            raise ValueError(f"blocked redirect to another site: {url[:200]}")
+        hosts.add(host)
+        conn = _PinnedHTTPS(host, public_ip(host))
+        try:
+            conn.request("GET", (p.path or "/") + (f"?{p.query}" if p.query else ""),
+                         headers={"User-Agent": UA, "Accept": accept, "Accept-Encoding": "identity"})
+            r = conn.getresponse()
+            if r.status in (301, 302, 303, 307, 308) and r.getheader("Location"):
+                url = urljoin(url, r.getheader("Location"))
+                continue
+            if r.status != 200:
+                raise ValueError(f"HTTP {r.status} from {host}")
+            ctype = (r.getheader("Content-Type") or "").lower()
+            data = r.read(max_bytes + 1)
+        finally:
+            conn.close()
+        if len(data) > max_bytes:
+            raise ValueError("response too large")
+        return url, data.decode("utf-8", "replace"), hosts, ctype
+    raise ValueError("too many redirects")
+
+
+def _playlist(url):
+    final, text, hosts, ctype = safe_get(url, PLAYLIST_MAX, "application/vnd.apple.mpegurl, */*")
+    if "html" in ctype or not text.lstrip("﻿ \r\n").startswith("#EXTM3U"):
+        raise ValueError("not an HLS playlist")
+    return final, text, hosts
+
+
+def _attrs(line):
+    return dict(re.findall(r'([A-Z0-9-]+)=("[^"]*"|[^,]*)', line.split(":", 1)[-1]))
+
+
+def _playlist_urls(text, base):
+    """Every URL a playlist points at (segments, sub-playlists, keys, init/map files)."""
+    out = []
+    for line in text.splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            out.append(urljoin(base, line))
+        for u in re.findall(r'URI="([^"]+)"', line):
+            out.append(urljoin(base, u))
+    return out
+
+
+def _hosts_of(urls):
+    hosts = set()
+    for u in urls:
+        p = urlparse(u)
+        if p.scheme in ("data", "skd"):
+            continue
+        h = safe_host(p.hostname)
+        if p.scheme != "https" or not h:
+            raise ValueError(f"stream uses a non-https or private address: {u[:200]}")
+        hosts.add(h)
+    return hosts
+
+
+def inspect_stream(src):
+    """Check a video link without downloading video. Returns (hosts the TV needs, quality)."""
+    p = urlparse(src)
+    if p.path.lower().endswith(".mp4"):
+        return _hosts_of([src]), ""
+    final, text, hosts = _playlist(src)
+    quality = ""
+    if "#EXT-X-STREAM-INF" in text:  # master playlist: list of qualities
+        lines = text.splitlines()
+        variants = []
+        for i, line in enumerate(lines):
+            if line.startswith("#EXT-X-STREAM-INF"):
+                a = _attrs(line)
+                nxt = next((l.strip() for l in lines[i + 1:] if l.strip() and not l.startswith("#")), None)
+                if nxt:
+                    res = re.match(r"(\d+)x(\d+)", a.get("RESOLUTION", ""))
+                    variants.append((int(res.group(2)) if res else 0, int(a.get("BANDWIDTH", "0") or 0),
+                                     urljoin(final, nxt), a.get("AUDIO", "").strip('"')))
+        if not variants:
+            raise ValueError("playlist lists no streams")
+        hosts |= _hosts_of(_playlist_urls(text, final))
+        height, _, best, audio_group = max(variants)  # the TV locks to this (highest quality)
+        quality = f"{height}p" if height else ""
+        vfinal, vtext, vhosts = _playlist(best)
+        hosts |= vhosts | _hosts_of(_playlist_urls(vtext, vfinal))
+        for line in text.splitlines():  # separate audio track for that quality, if any
+            if line.startswith("#EXT-X-MEDIA") and "TYPE=AUDIO" in line:
+                a = _attrs(line)
+                if a.get("GROUP-ID", "").strip('"') == audio_group and "URI" in a:
+                    afinal, atext, ahosts = _playlist(urljoin(final, a["URI"].strip('"')))
+                    hosts |= ahosts | _hosts_of(_playlist_urls(atext, afinal))
+                    break
+    else:
+        hosts |= _hosts_of(_playlist_urls(text, final))
+    if len(hosts) > MAX_STREAM_HOSTS:
+        raise ValueError("stream spread over too many hosts")
+    return hosts, quality
+
+
+def _candidates_from_html(html, base):
+    found = []
+    for strategy in STRATEGIES:
+        for v in strategy(html):
+            v["src"] = urljoin(base, v["src"])
+            if is_video(v["src"]):
+                found.append(v)
+    return found
+
+
+def _candidates_from_browser(url):
+    from safe_browser import SafeBrowser
+    with SafeBrowser(url, allow_other_site_frames=True) as b:
+        page = b.page
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        for i in range(80):  # up to ~20s for the player to request its video
+            if b.videos:
+                break
+            if i == 24:  # nothing after ~6s: press play in the middle of the player once
+                try:
+                    page.mouse.click(640, 400)
+                except Exception:
+                    pass
+            page.wait_for_timeout(250)
+        info = b.page_info()
+        html = page.content()
+        urls = b.videos + [u for u in b.dom_videos() if u not in b.videos]
+    found = [video(info["title"], info["description"], info["thumbnail"], u) for u in urls]
+    return found + _candidates_from_html(html, url)
+
+
+def open_title(imdb_id, season=None, episode=None):
+    """Scrape OPEN_URL (or OPEN_URL_TV for an episode) for one IMDb title.
+    Returns {"videos": [...], "allowedHosts": [...]}."""
+    if not IMDB_ID_RE.match(imdb_id or ""):
+        raise ValueError("bad IMDb id")
+    if season is not None or episode is not None:
+        season, episode = int(season), int(episode)
+        if not (0 <= season <= 999 and 0 <= episode <= 9999):
+            raise ValueError("bad season/episode")
+        url = OPEN_URL_TV.format(imdb_id=imdb_id, season=season, episode=episode)
+    else:
+        url = OPEN_URL.format(imdb_id=imdb_id)
+    site = site_of(urlparse(url).hostname)
+    candidates = []
+    try:  # 1) read the page as plain text (nothing from the site runs)
+        final, html, _, ctype = safe_get(url, MAX_BYTES, "text/html", same_site=site)
+        if "text/html" in ctype:
+            candidates = _candidates_from_html(html, final)
+    except Exception as e:
+        print(f"open {imdb_id}: plain fetch failed: {e}")
+    if not candidates:  # 2) the page needs JavaScript: use the sandboxed browser
+        try:
+            candidates = _candidates_from_browser(url)
+        except Exception as e:
+            print(f"open {imdb_id}: sandboxed browser failed: {str(e).splitlines()[0][:200]}")
+    candidates.sort(key=lambda v: not urlparse(v["src"]).path.lower().endswith(".m3u8"))  # HLS first
+    seen = set()
+    for v in candidates[:8]:
+        if v["src"] in seen:
+            continue
+        seen.add(v["src"])
+        try:
+            hosts, quality = inspect_stream(v["src"])
+        except Exception as e:
+            print(f"open {imdb_id}: rejected {v['src'][:120]}: {e}")
+            continue
+        thumb = v["thumbnail"] if safe_host(urlparse(v["thumbnail"] or "").hostname) and \
+            (v["thumbnail"] or "").startswith("https://") else ""
+        if thumb:
+            hosts.add(urlparse(thumb).hostname.lower())
+        item = video(clean_text(v["title"], 200), clean_text(v["description"], 500), thumb, v["src"])
+        item["quality"] = quality
+        return {"imdbId": imdb_id, "season": season, "episode": episode,
+                "videos": [item], "allowedHosts": sorted(hosts)}
+    return {"imdbId": imdb_id, "videos": [], "allowedHosts": [], "error": "no playable video found"}
+
+
 # ---------- main ----------
 
 def scrape():
@@ -257,6 +502,9 @@ def scrape():
 
 
 def main():
+    if len(sys.argv) > 2 and sys.argv[1] == "--open":
+        print(json.dumps(open_title(*sys.argv[2:5]), indent=2, ensure_ascii=False))
+        return
     if len(sys.argv) > 2 and sys.argv[1] == "--search":
         print(json.dumps(search(" ".join(sys.argv[2:])), indent=2, ensure_ascii=False))
         return

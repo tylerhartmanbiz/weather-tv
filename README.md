@@ -1,7 +1,8 @@
 # Video TV (Fire TV)
 
-Fire TV app that shows videos scraped from a website you choose, with search: press **▲** on
-the remote, type a word, and it shows the matching video.
+Fire TV app: search movies and TV shows, pick one, pick a season/episode, press **▶ Open**,
+and it plays the video from your video website. **Everything runs on the TV.** No computer
+needed.
 
 ## Install (once)
 
@@ -11,55 +12,70 @@ On the Fire TV, open **Downloader** and enter:
 github.com/tylerhartmanbiz/weather-tv/releases/latest/download/weather-tv.apk
 ```
 
-## Set up a new website (record once, reuse forever)
+(If you installed an older version that needed your computer, install this once more. After
+that, updates arrive by themselves; see below.)
 
+## Set the video website
+
+Edit `docs/config.json` and push:
+
+```json
+"openUrl":   "https://test.com/{imdb_id}",                      // movies
+"openUrlTv": "https://test.com/{imdb_id}_{season}_{episode}",   // TV episodes
 ```
-./helper.sh setup     # first time only (installs an isolated browser into .venv/)
-./helper.sh record    # records your search, writes scrapper.py for you
-./helper.sh serve     # keep running: the TV sends its searches here
-```
 
-1. **Record:** `./helper.sh record` asks for the website and an example word (e.g. `tornado`).
-   A locked-down browser opens: search for that word the normal way and open the video you
-   want. When the terminal says *video detected*, press Enter there. Your clicks and typing are
-   saved into the `RECIPE` section of `scrapper.py` (the example word becomes `{query}`), and
-   it immediately re-runs the search by itself to check it works.
-2. **Test any word:** `./helper.sh search hurricane`
-3. **Use it on the TV:** `./helper.sh serve` (same Wi-Fi as the TV). It publishes this
-   computer's home-network address to `docs/config.json` so the app can find it. On the TV,
-   press ▲, type, press Enter.
+`{imdb_id}` becomes e.g. `tt0993846`. TV episodes become e.g. `tt0903747_1_2`.
 
-Optional default video list (what plays when the app opens): set `SOURCE` in `scrapper.py`,
-then `./helper.sh scrape`.
+## Using it
 
-Changing websites = edit `SOURCE` in `scrapper.py` and run `./helper.sh record` again.
-Nothing else, and no APK reinstall.
+1. Type a title (the search opens on launch, or press **▲**). IMDb results appear as you type.
+2. Pick one: poster, rating, description, cast. TV shows get **Season / Episode** pickers
+   (◀ ▶ to change, with episode names).
+3. **▶ Open**: the TV finds the video (up to ~30 s), then loads 30 seconds of the
+   highest-quality stream with a **% counter** before it starts. It streams; nothing is saved.
 
-## Remote
+Remote: ▲ search · ▼▲ move · ◀ ▶ change season/episode (or skip 10 s while watching) ·
+OK open / pause · Back goes back a screen · Menu ☰ reload.
 
-▲ search · ◀ ▶ previous/next video · OK pause/play · Back closes search / exits · Menu ☰ reload
+Show details and episode lists come from TVmaze (free public API, looked up by IMDb ID).
+IMDb's details service refuses apps, so movies show the poster, year and stars from IMDb
+search.
 
 ## How updates work (no reinstall)
 
-The APK is a thin shell around `docs/index.html` on GitHub Pages. Push a change and the TV
-shows it on next launch (or Menu ☰). Only changes under `app/` need a new APK (built by the
-*Build APK* GitHub Action).
+The APK is a thin shell around `docs/index.html` on GitHub Pages, and the website address is
+in `docs/config.json`. Push a change and the TV picks it up on next launch (or Menu ☰). Only
+changes under `app/` need a new APK (built by the *Build APK* GitHub Action).
 
 ## Safety
 
-Every website is treated as untrusted.
+The video website is treated as hostile.
 
-- **Your computer:** searches run in `safe_browser.py`, a Chromium with its OS sandbox ON, a
-  brand-new empty profile each time (none of your logins/cookies), downloads refused, popups
-  closed instantly, pages from other websites blocked, permissions (camera/mic/location)
-  denied, and video bytes never downloaded (only the link is kept). The plain default-list
-  scraper (`./helper.sh scrape`) runs in a macOS sandbox that can only write `docs/videos.json`.
-- **The TV never opens the website.** It only streams the video link. The app connects over
-  https to just: this app page, the pinned + integrity-checked player library, and the video
-  hosts the scraper approved. Everything else is refused. Popups/new windows are refused,
-  dialogs suppressed, navigation to other sites or apps blocked, downloads ignored, no file
-  access, only the INTERNET permission. Searches are forwarded only to a private home-network
-  address (192.168.x / 10.x / 172.16–31.x).
-- **Limits:** works with sites whose videos are direct `.m3u8`/`.mp4` streams. Sites that need
-  a login, or only embed YouTube-style players, won't play on the TV. Anyone on your Wi-Fi
-  could also send searches to the server while it's running.
+- **It never runs in the app you see.** When you press Open, the TV loads the site in a
+  separate hidden browser (Android's sandboxed WebView renderer) that has no access to the
+  app, your files, camera, mic or location (all permission requests are denied, and the app
+  only has the INTERNET permission).
+- In that hidden browser: downloads are ignored, popups and new windows are refused,
+  alert/confirm/prompt are suppressed, the page can't leave the site or open other apps or
+  app stores, service workers are blocked, and only https to public internet addresses is
+  allowed. Nothing on your home network (router, computers, phones) can be reached. Video
+  players embedded from another site may load, inside the same sandbox.
+- It never downloads the video: video and playlist requests are noted and cancelled, and
+  media pieces, images and fonts are cancelled too. Then its cookies, storage and cache are
+  wiped and it is destroyed. If the page crashes the browser, the app just rebuilds it.
+- The found stream is checked before playback: only its small text playlists are read, in
+  memory, to list every host it uses. Every one must be https on a normal public hostname
+  that resolves to a public address.
+- The app you see may only connect to: this page, the pinned + integrity-checked player
+  library, the IMDb/TVmaze image hosts, IMDb/TVmaze data (read as text), and exactly the
+  stream hosts that check approved. Everything else is refused. No http at all.
+- **Limits:** works with sites whose player uses a direct `.m3u8`/`.mp4` stream. Sites that
+  need a login, or DRM-protected streams, won't play. The sandbox is strong, but no sandbox
+  is perfect: keep the Fire TV's software updated (Settings → My Fire TV → About → Check for
+  updates) so the built-in browser engine has the latest security fixes.
+
+## Optional computer tools
+
+Not needed for the TV. `./helper.sh open tt0993846 [season episode]` tests a site's Open link
+from a Mac (sandboxed Chromium). `server.py` and `imdb.py` are leftovers from the old
+computer-based version and can be deleted.

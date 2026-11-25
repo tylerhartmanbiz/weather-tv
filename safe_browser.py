@@ -4,8 +4,10 @@ Protections:
   * Chromium's own OS sandbox is ON (Playwright turns it off by default; we turn it back on).
   * Brand-new throwaway profile every time: none of your cookies, logins or history.
   * Downloads are refused. Popups / new tabs are closed the instant they open.
-  * The main page may only go to the starting site; frames/pages from other sites are
-    blocked (ads, redirects to other websites, etc.).
+  * The main page may only go to the starting site (redirects to other websites are blocked).
+    Frames from other sites are blocked too, unless allow_other_site_frames=True (used by the
+    TV "Open" button, because video players are often embedded from another site; they stay
+    inside this same sandbox).
   * Video bytes are never downloaded: the video URL is noted and the request is cancelled.
   * Permissions (camera, mic, location, notifications) are all denied.
 """
@@ -28,9 +30,11 @@ def is_video_url(url):
 
 
 class SafeBrowser:
-    def __init__(self, start_url, headless=True, block_images=True, on_video=None, on_block=None):
+    def __init__(self, start_url, headless=True, block_images=True, on_video=None, on_block=None,
+                 allow_other_site_frames=False):
         self.site = site_of(urlparse(start_url).hostname)
         self.headless = headless
+        self.allow_other_site_frames = allow_other_site_frames
         self.block_images = block_images
         self.on_video = on_video or (lambda url: None)
         self.on_block = on_block or (lambda what, url: None)
@@ -80,8 +84,10 @@ class SafeBrowser:
         if path.endswith(SEGMENT_EXT):
             return route.abort()
         if req.resource_type == "document" and site_of(p.hostname) != self.site:
-            self.on_block("other-site page", url)
-            return route.abort()
+            is_main = req.frame.parent_frame is None
+            if is_main or not self.allow_other_site_frames or p.scheme != "https":
+                self.on_block("other-site page", url)
+                return route.abort()
         if self.block_images and req.resource_type in ("image", "font"):
             return route.abort()
         return route.continue_()

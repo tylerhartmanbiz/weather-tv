@@ -3,34 +3,116 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- No frames, no forms, no plugins, https only. The TV app additionally only lets the
-     hosts listed in videos.json (written by scrapper.py) connect at all. -->
+<!-- No frames, no forms, no plugins, https only. The TV app additionally only lets this page,
+     the player library, poster images, and the stream hosts it checked itself connect. -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; connect-src 'self' https:; media-src https: blob:; img-src https:; worker-src blob:; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'">
 <title>Video TV</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #000; color: #fff; font-family: system-ui, sans-serif; overflow: hidden; }
+  html { font-size: clamp(14px, 1.5vw, 28px); }
+  html, body { margin: 0; height: 100%; background: #000; color: #e8ebef; font-family: system-ui, sans-serif; overflow: hidden; }
   video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
-  #info { position: fixed; left: 0; right: 0; bottom: 0; padding: 48px 64px 40px;
+  .hide { display: none !important; }
+  #info { position: fixed; left: 0; right: 0; bottom: 0; padding: 3rem 4rem 2.5rem;
           background: linear-gradient(transparent, rgba(0,0,0,.85)); transition: opacity .6s; }
-  #info.hide { opacity: 0; }
-  #title { font-size: 34px; font-weight: 700; margin: 0 0 8px; }
-  #desc { font-size: 20px; opacity: .85; margin: 0 0 12px; max-width: 70ch; }
-  #meta { font-size: 16px; opacity: .6; }
-  #search { position: fixed; top: 24px; left: 50%; transform: translateX(-50%); display: flex; gap: 12px;
-            align-items: center; background: rgba(0,0,0,.7); padding: 10px 18px; border-radius: 40px;
-            transition: opacity .4s; font-size: 20px; }
-  #search.hide { opacity: 0; }
-  #q { font-size: 24px; width: 520px; padding: 10px 18px; border-radius: 30px; border: 2px solid #555;
-       background: #111; color: #fff; outline: none; }
-  #q:focus { border-color: #4da3ff; }
-  #msg { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 24px; }
+  #info.fade { opacity: 0; }
+  #title { font-size: 2rem; font-weight: 700; margin: 0 0 .5rem; }
+  #desc { font-size: 1.2rem; opacity: .85; margin: 0 0 .75rem; max-width: 70ch; }
+  #meta { font-size: 1rem; opacity: .6; }
+  #msg { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 1.5rem; text-align: center; padding: 2rem; }
+
+  .overlay { position: fixed; inset: 0; background: rgba(13,15,18,.97); overflow: hidden; }
+  /* search */
+  #search { padding: 2.5rem 0; }
+  #search .col { width: 62vw; margin: 0 auto; }
+  #search h1 { font-size: 1.4rem; margin: 0 0 1rem; color: #9aa4b1; font-weight: 600; }
+  #search h1 b { background: #f5c518; color: #000; padding: 0 .4rem; border-radius: .2rem; margin-right: .4rem; }
+  #q { width: 100%; box-sizing: border-box; font-size: 1.5rem; padding: .8rem 1.2rem; border-radius: .8rem;
+       border: 2px solid #2a313b; background: #161a20; color: #fff; outline: none; }
+  #q:focus { border-color: #f5c518; }
+  #results { list-style: none; margin: 1rem 0 0; padding: 0; }
+  #results li { display: flex; gap: 1rem; align-items: center; padding: .45rem .8rem; border-radius: .6rem;
+                border: 2px solid transparent; outline: none; }
+  #results li:focus { background: #1d222a; border-color: #f5c518; }
+  #results img, #results .ph { width: 2.6rem; height: 3.9rem; object-fit: cover; border-radius: .25rem; background: #1d222a; flex: none; }
+  #results .t { font-size: 1.15rem; font-weight: 600; }
+  #results .m { font-size: .9rem; color: #9aa4b1; }
+  #hint { color: #9aa4b1; font-size: .9rem; margin-top: 1rem; }
+  /* details */
+  #detail { display: grid; grid-template-columns: 22vw 1fr; gap: 2.5rem; padding: 3rem 4rem; box-sizing: border-box; }
+  #poster { width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: .8rem; background: #161a20; }
+  #dbody { overflow: hidden; }
+  #dtitle { font-size: 2.2rem; margin: 0; line-height: 1.15; }
+  #dmeta { color: #9aa4b1; margin: .5rem 0 1rem; display: flex; flex-wrap: wrap; gap: .4rem 1rem; align-items: center; font-size: 1rem; }
+  #dmeta .id { font-family: ui-monospace, Menlo, monospace; background: #1d222a; border: 1px solid #2a313b; border-radius: .3rem; padding: 0 .5rem; color: #e8ebef; }
+  #dmeta .rating { color: #f5c518; font-weight: 600; }
+  .pills { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1rem; }
+  .pill { background: #1d222a; border: 1px solid #2a313b; border-radius: 999px; padding: .2rem .8rem; font-size: .9rem; }
+  .pill.tv { border-color: #f5c518; color: #f5c518; }
+  #dplot { font-size: 1.1rem; line-height: 1.5; margin: 0 0 1.2rem; max-width: 70ch; }
+  #epick { display: flex; gap: 1rem; margin-bottom: 1.2rem; }
+  .sel { display: flex; align-items: center; gap: .6rem; background: #161a20; border: 3px solid #2a313b;
+         border-radius: .7rem; padding: .5rem 1rem; outline: none; font-size: 1.15rem; min-width: 9rem; }
+  .sel:focus { border-color: #f5c518; }
+  .sel .lbl { color: #9aa4b1; font-size: .9rem; }
+  .sel .val { font-weight: 700; min-width: 1.6rem; text-align: center; }
+  .sel .arr { color: #555e6b; }
+  .sel:focus .arr { color: #f5c518; }
+  #eptitle { color: #9aa4b1; font-size: .95rem; max-width: 22rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #openBtn { font-size: 1.3rem; font-weight: 700; padding: .7rem 2.2rem; border-radius: .7rem; border: 3px solid transparent;
+             background: #f5c518; color: #000; outline: none; margin-bottom: 1.5rem; }
+  #openBtn:focus { border-color: #fff; box-shadow: 0 0 0 .3rem rgba(245,197,24,.35); }
+  h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; color: #9aa4b1; margin: 0 0 .6rem; }
+  #cast { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; }
+  .actor { display: flex; gap: .6rem; align-items: center; background: #161a20; border-radius: .6rem; padding: .4rem; }
+  .actor img, .actor .ph { width: 2.4rem; height: 2.4rem; border-radius: 50%; object-fit: cover; background: #1d222a; flex: none; }
+  .actor .n { font-weight: 600; font-size: .9rem; }
+  .actor .c { color: #9aa4b1; font-size: .8rem; }
+  /* loading / buffering */
+  #loader { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1.2rem; text-align: center; }
+  #ltitle { font-size: 1.8rem; font-weight: 700; }
+  #lstatus { font-size: 1.2rem; color: #9aa4b1; }
+  #lpct { font-size: 3.5rem; font-weight: 800; color: #f5c518; font-variant-numeric: tabular-nums; }
+  #lbar { width: 40vw; height: .6rem; background: #1d222a; border-radius: 1rem; overflow: hidden; }
+  #lfill { height: 100%; width: 0; background: #f5c518; transition: width .25s; }
+  #lhint { font-size: .9rem; color: #9aa4b1; }
 </style>
 </head>
 <body>
-<video id="v" autoplay playsinline></video>
-<div id="search" class="hide"><span>🔍</span><input id="q" type="search" placeholder="Search videos… (▲ on remote)" maxlength="100" autocomplete="off"></div>
+<video id="v" playsinline></video>
 <div id="msg">Loading…</div>
-<div id="info" class="hide"><p id="title"></p><p id="desc"></p><div id="meta"></div></div>
+<div id="info" class="fade"><p id="title"></p><p id="desc"></p><div id="meta"></div></div>
+
+<div id="search" class="overlay hide"><div class="col">
+  <h1><b>IMDb</b>Search movies &amp; TV shows</h1>
+  <input id="q" type="search" placeholder="Type a title… (e.g. wolf of w)" maxlength="100" autocomplete="off">
+  <ul id="results"></ul>
+  <div id="hint">▼ to pick a result · OK to open · Back to close</div>
+</div></div>
+
+<div id="detail" class="overlay hide">
+  <img id="poster" alt="">
+  <div id="dbody">
+    <h2 id="dtitle"></h2>
+    <div id="dmeta"></div>
+    <div id="dpills" class="pills"></div>
+    <p id="dplot"></p>
+    <div id="epick" class="hide">
+      <div class="sel" id="selSeason" tabindex="0"><span class="lbl">Season</span><span class="arr">◀</span><span class="val" id="vSeason">1</span><span class="arr">▶</span></div>
+      <div class="sel" id="selEpisode" tabindex="0"><span class="lbl">Episode</span><span class="arr">◀</span><span class="val" id="vEpisode">1</span><span class="arr">▶</span><span id="eptitle"></span></div>
+    </div>
+    <button id="openBtn">▶ Open</button>
+    <div id="dcastwrap"><h3>Cast</h3><div id="cast"></div></div>
+  </div>
+</div>
+
+<div id="loader" class="overlay hide">
+  <div id="ltitle"></div>
+  <div id="lstatus"></div>
+  <div id="lpct"></div>
+  <div id="lbar"><div id="lfill"></div></div>
+  <div id="lhint">Back to cancel</div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.7.4/dist/hls.min.js"
         integrity="sha384-p9vgU/7IYJWd3I4STrtqxqR/2cAQlhIX7D/HrTnIMEjjcUox165b7se7sxmm3zDg"
         crossorigin="anonymous"></script>
@@ -41,81 +123,183 @@ window.alert = window.confirm = window.prompt = () => {};
 document.addEventListener('click', e => { if (e.target.closest('a')) e.preventDefault(); }, true);
 </script>
 <script>
-const video = document.getElementById('v');
-const info = document.getElementById('info');
-const msg = document.getElementById('msg');
-let videos = [], index = 0, hls = null, hideTimer = null, searchTimer = null;
-const searchBox = document.getElementById('search');
-const q = document.getElementById('q');
+const $ = id => document.getElementById(id);
+const video = $('v'), info = $('info'), msg = $('msg');
+const searchEl = $('search'), q = $('q'), resultsEl = $('results');
+const detailEl = $('detail'), loaderEl = $('loader');
+const BUFFER_SECONDS = 30;   // how much video to load before playback starts (bigger = smoother)
 
-function showSearch(focus) {
-  searchBox.classList.remove('hide');
-  clearTimeout(searchTimer);
-  if (focus) q.focus();
-  else searchTimer = setTimeout(() => { if (document.activeElement !== q) searchBox.classList.add('hide'); }, 6000);
+let screen = 'player';      // player | search | detail | loader
+let videos = [], index = 0, hls = null, hideTimer = null;
+let results = [], current = null, opened = null;   // current = title on the detail screen
+let searchToken = 0, openToken = 0, bufferTimer = null, searchTimer = null;
+let pick = { season: 1, episode: 1, episodes: null, token: 0 };   // TV shows: chosen season/episode
+
+// ---------- helpers ----------
+const img = (url, w) => /^https:\/\/m\.media-amazon\.com\//.test(url || '') ? url.replace(/\._V1_.*\.jpg$/, `._V1_UX${w}_.jpg`)
+  : /^https:\/\/static\.tvmaze\.com\//.test(url || '') ? url : '';
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function show(name) {
+  screen = name;
+  searchEl.classList.toggle('hide', name !== 'search');
+  detailEl.classList.toggle('hide', name !== 'detail');
+  loaderEl.classList.toggle('hide', name !== 'loader');
+  if (name !== 'player') msg.style.display = 'none';
 }
-function closeSearch() { q.blur(); searchBox.classList.add('hide'); }
-// Called by the TV app when Back is pressed: close the search box instead of exiting.
-window.onTvBack = () => { if (document.activeElement === q) { closeSearch(); return true; } return false; };
-
-function setVideos(d, label) {
+function safeVideos(d) {
+  // Only https links on hosts the TV app checked and approved (the app enforces this too).
   const allowed = new Set(d.allowedHosts || []);
-  const list = (d.videos || []).filter(v => {
+  return (d.videos || []).filter(v => {
     try { const u = new URL(v.src); return u.protocol === 'https:' && allowed.has(u.hostname); }
     catch (e) { return false; }
   });
-  if (!list.length) return false;
-  videos = list;
-  play(0);
-  return true;
+}
+// Everything runs on the TV. The app shell answers two same-origin URLs:
+//   api/fetch?url=..&post=..  JSON from IMDb (approved data hosts only)
+//   api/open?url=..           opens the video site hidden + sandboxed, returns its stream
+let cfg = null;
+async function config() {
+  if (!cfg) cfg = await (await fetch('config.json?t=' + Date.now(), { cache: 'no-store' })).json();
+  return cfg;
+}
+async function getJson(url, post) {
+  const r = await fetch('api/fetch?url=' + encodeURIComponent(url) +
+    (post ? '&post=' + encodeURIComponent(JSON.stringify(post)) : ''), { cache: 'no-store' });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
 }
 
-function runSearch(text) {
-  text = text.trim();
-  if (!text) return;
-  closeSearch();
-  msg.style.display = 'flex';
-  msg.textContent = `Searching for "${text}"… (can take ~20 seconds)`;
-  fetch('api/search?q=' + encodeURIComponent(text), { cache: 'no-store' })
-    .then(r => r.json())
-    .then(d => {
-      if (d.error && d.error.includes('server')) throw new Error(d.error);
-      if (!setVideos(d)) { msg.textContent = `No videos found for "${text}".`; setTimeout(() => { if (!video.paused) msg.style.display = 'none'; }, 4000); }
-    })
-    .catch(() => { msg.textContent = 'Search unavailable: start ./helper.sh serve on your computer.'; });
+// ---------- IMDb (plain text fields only; images only from IMDb's image host) ----------
+const IMDB_ID = /^tt\d{7,10}$/;
+const txt = (s, n) => String(s ?? '').replace(/[\u0000-\u001f<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, n);
+const imgUrl = u => (typeof u === 'string' && u.length < 500 &&
+  (u.startsWith('https://m.media-amazon.com/') || u.startsWith('https://static.tvmaze.com/'))) ? u : '';
+const TYPES = { feature: 'Movie', 'TV series': 'TV Series', 'TV mini-series': 'TV Mini Series', 'TV movie': 'TV Movie',
+                'TV special': 'TV Special', short: 'Short', video: 'Video' };
+const SKIP = new Set(['videoGame', 'podcastSeries', 'podcastEpisode', 'musicVideo']);
+const GQL = 'https://caching.graphql.imdb.com/';
+
+async function imdbSearch(q) {
+  q = q.replace(/[\u0000-\u001f]/g, '').trim().toLowerCase().slice(0, 100);
+  const d = await getJson(`https://v3.sg.media-imdb.com/suggestion/titles/x/${encodeURIComponent(q)}.json`);
+  return (d.d || []).filter(x => IMDB_ID.test(String(x.id)) && !SKIP.has(x.qid)).slice(0, 10).map(x => ({
+    id: x.id, title: txt(x.l, 200), year: txt(x.yr || x.y, 20), type: TYPES[x.q] || txt(x.q, 30),
+    isTv: /TV (series|mini-series)/.test(String(x.q || '')), stars: txt(x.s, 200), poster: imgUrl((x.i || {}).imageUrl),
+  }));
 }
 
-q.addEventListener('keydown', e => {
-  e.stopPropagation();
-  if (e.key === 'Enter') { e.preventDefault(); runSearch(q.value); }
-  else if (e.key === 'Escape') closeSearch();
-});
+const TITLE_Q = `query($id: ID!) { title(id: $id) {
+  titleText { text } titleType { text canHaveEpisodes } releaseYear { year endYear } runtime { seconds }
+  certificate { rating } ratingsSummary { aggregateRating } plot { plotText { plainText } } primaryImage { url }
+  genres { genres { text } } episodes { seasons { number } episodes(first: 0) { total } }
+  credits(first: 15, filter: { categories: ["cast"] }) { edges { node {
+    name { nameText { text } primaryImage { url } } ... on Cast { characters { name } } } } } } }`;
 
-function showInfo() {
-  info.classList.remove('hide');
-  clearTimeout(hideTimer);
-  hideTimer = setTimeout(() => info.classList.add('hide'), 6000);
+// TV shows: TVmaze (free public API, looks shows up by IMDb ID) gives seasons, episode names,
+// cast and description. IMDb's own details service often refuses apps, so it's only a fallback.
+const TVMAZE = 'https://api.tvmaze.com';
+const plain = html => txt(new DOMParser().parseFromString(String(html || ''), 'text/html').body.textContent, 1000);
+let maze = { id: null, show: null };
+async function mazeShow(id) {
+  if (maze.id !== id) {
+    const s = await getJson(`${TVMAZE}/lookup/shows?imdb=${id}`);
+    if (!Number.isInteger(s.id)) throw new Error('not on TVmaze');
+    maze = { id, show: await getJson(`${TVMAZE}/shows/${s.id}?embed[]=episodes&embed[]=cast`) };
+  }
+  return maze.show;
+}
+async function mazeTitle(id) {
+  const s = await mazeShow(id), emb = s._embedded || {}, eps = emb.episodes || [];
+  const seasonNumbers = [...new Set(eps.map(e => e.season).filter(n => Number.isInteger(n) && n > 0 && n < 1000))].sort((a, b) => a - b);
+  return {
+    id, title: txt(s.name, 200), type: 'TV Series', isTv: true,   // year: keep IMDb's
+    seasons: seasonNumbers.length, seasonNumbers, episodes: eps.length || null,
+    runtime: (s.averageRuntime || s.runtime) ? (s.averageRuntime || s.runtime) * 60 : null,
+    rating: (s.rating || {}).average, plot: plain(s.summary), poster: imgUrl((s.image || {}).original),
+    genres: (s.genres || []).map(g => txt(g, 30)).slice(0, 5),
+    cast: (emb.cast || []).slice(0, 15).map(c => ({
+      name: txt((c.person || {}).name, 100), character: txt((c.character || {}).name, 100),
+      photo: imgUrl(((c.person || {}).image || {}).medium),
+    })).filter(c => c.name),
+  };
+}
+async function mazeEpisodes(id, season) {
+  const s = await mazeShow(id);
+  return ((s._embedded || {}).episodes || []).filter(e => e.season === season && Number.isInteger(e.number))
+    .map(e => ({ episode: e.number, title: txt(e.name, 120) }));
 }
 
-function play(i) {
-  index = (i + videos.length) % videos.length;
-  const item = videos[index];
-  document.getElementById('title').textContent = item.title;
-  document.getElementById('desc').textContent = item.description;
-  document.getElementById('meta').textContent =
-    `${index + 1} / ${videos.length}  ·  ◀ ▶ change video  ·  OK pause/play  ·  ▲ search`;
-  if (item.thumbnail) video.poster = item.thumbnail;
+async function imdbTitle(id, isTv) {
+  if (isTv) { try { return await mazeTitle(id); } catch (e) { /* fall back to IMDb */ } }
+  const t = ((await getJson(GQL, { query: TITLE_Q, variables: { id } })).data || {}).title;
+  if (!t) throw new Error('no data');
+  const y = t.releaseYear || {}, tv = !!(t.titleType || {}).canHaveEpisodes, eps = t.episodes || {};
+  let year = String(y.year || '');
+  if (y.endYear && y.endYear !== y.year) year += '–' + y.endYear; else if (tv && year) year += '–';
+  const seasonNumbers = tv ? [...new Set((eps.seasons || []).map(s => s.number)
+    .filter(n => Number.isInteger(n) && n > 0 && n < 1000))].sort((a, b) => a - b) : [];
+  return {
+    id, title: txt((t.titleText || {}).text, 200), year, type: txt((t.titleType || {}).text, 30), isTv: tv,
+    seasons: tv ? seasonNumbers.length : null, seasonNumbers, episodes: tv ? (eps.episodes || {}).total : null,
+    runtime: (t.runtime || {}).seconds, certificate: txt((t.certificate || {}).rating, 10),
+    rating: (t.ratingsSummary || {}).aggregateRating, plot: txt(((t.plot || {}).plotText || {}).plainText, 1000),
+    poster: imgUrl((t.primaryImage || {}).url),
+    genres: ((t.genres || {}).genres || []).map(g => txt(g.text, 30)).slice(0, 5),
+    cast: ((t.credits || {}).edges || []).map(e => e.node || {}).map(n => ({
+      name: txt(((n.name || {}).nameText || {}).text, 100),
+      character: txt((n.characters || []).map(c => c.name || '').join(' / '), 100),
+      photo: imgUrl(((n.name || {}).primaryImage || {}).url),
+    })).filter(c => c.name),
+  };
+}
+
+const EPISODES_Q = `query($id: ID!, $season: String!) { title(id: $id) { episodes {
+  episodes(first: 250, filter: { includeSeasons: [$season] }) { edges { node {
+    titleText { text } series { episodeNumber { episodeNumber seasonNumber } } } } } } } }`;
+
+async function imdbEpisodes(id, season) {
+  try { const e = await mazeEpisodes(id, season); if (e.length) return e; } catch (e) { /* fall back to IMDb */ }
+  const t = ((await getJson(GQL, { query: EPISODES_Q, variables: { id, season: String(season) } })).data || {}).title || {};
+  const out = new Map();
+  for (const e of (((t.episodes || {}).episodes || {}).edges || [])) {
+    const n = e.node || {}, num = (((n.series || {}).episodeNumber) || {}).episodeNumber;
+    if (Number.isInteger(num) && num >= 0 && num < 10000) out.set(num, txt((n.titleText || {}).text, 120));
+  }
+  return [...out].sort((a, b) => a[0] - b[0]).map(([episode, title]) => ({ episode, title }));
+}
+
+// ---------- Open: the TV opens the video site hidden + sandboxed and returns its stream ----------
+async function openStream(t, season, episode) {
+  const c = await config();
+  const url = (t.isTv ? c.openUrlTv : c.openUrl)
+    .replace('{imdb_id}', t.id).replace('{season}', season).replace('{episode}', episode);
+  const r = await fetch('api/open?url=' + encodeURIComponent(url), { cache: 'no-store' });
+  return r.json();
+}
+
+// ---------- player ----------
+function stopVideo() {
+  clearInterval(bufferTimer);
   if (hls) { hls.destroy(); hls = null; }
-  const isHls = /\.m3u8(\?|$)/i.test(new URL(item.src).pathname + new URL(item.src).search);
-  if (isHls && window.Hls && Hls.isSupported()) {
-    // Always use the best quality: lock to the highest-resolution/bitrate stream the TV
-    // can decode (no adaptive drop-down), and buffer more ahead to avoid stalls.
+  video.pause();
+  video.removeAttribute('src');
+  video.removeAttribute('poster');
+  video.load();
+}
+
+function attach(src) {
+  stopVideo();
+  const u = new URL(src);
+  if (/\.m3u8$/i.test(u.pathname) && window.Hls && Hls.isSupported()) {
+    // Best quality: lock to the highest resolution/bitrate the TV can decode (no automatic
+    // drop to lower quality) and keep a large buffer ahead to avoid stalls.
     hls = new Hls({
       capLevelToPlayerSize: false,
       startLevel: -1,
       abrEwmaDefaultEstimate: 50_000_000,
-      maxBufferLength: 60,
-      maxMaxBufferLength: 120,
+      maxBufferLength: 90,
+      maxMaxBufferLength: 180,
+      maxBufferSize: 200 * 1000 * 1000,
     });
     hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
       let best = 0;
@@ -125,33 +309,309 @@ function play(i) {
       });
       hls.currentLevel = best; // fixed level = auto quality switching off
     });
-    hls.loadSource(item.src);
+    hls.loadSource(src);
     hls.attachMedia(video);
   } else {
-    video.src = item.src; // .mp4, or native HLS
+    video.preload = 'auto';
+    video.src = src; // .mp4, or native HLS
   }
+}
+
+function showInfo() {
+  info.classList.remove('fade');
+  clearTimeout(hideTimer);
+  hideTimer = setTimeout(() => info.classList.add('fade'), 6000);
+}
+
+function play(i) {   // the default video list (videos.json)
+  opened = null;
+  index = (i + videos.length) % videos.length;
+  const item = videos[index];
+  $('title').textContent = item.title;
+  $('desc').textContent = item.description;
+  $('meta').textContent = `${index + 1} / ${videos.length}  ·  ◀ ▶ change video  ·  OK pause/play  ·  ▲ search`;
+  attach(item.src);
+  if (item.thumbnail) video.poster = item.thumbnail;
   video.play().catch(() => {});
   showInfo();
 }
 
-
 video.addEventListener('playing', () => { msg.style.display = 'none'; });
-video.addEventListener('ended', () => play(index + 1));
+video.addEventListener('ended', () => {
+  if (opened) { stopVideo(); openDetail(opened); }
+  else if (videos.length) play(index + 1);
+});
+
+// ---------- IMDb search ----------
+function openSearch() {
+  show('search');
+  if (!video.paused) video.pause();
+  q.focus();
+}
+
+q.addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  const text = q.value.trim();
+  if (!text) { results = []; renderResults(); return; }
+  searchTimer = setTimeout(() => runSearch(text), 250);
+});
+
+async function runSearch(text) {
+  const token = ++searchToken;
+  try {
+    const found = await imdbSearch(text);
+    if (token !== searchToken) return;
+    results = found;
+    renderResults(`No titles found for “${text}”.`);
+  } catch (e) {
+    if (token === searchToken) { results = []; renderResults('Search failed. Check the TV’s internet connection and try again.'); }
+  }
+}
+
+function renderResults(emptyText) {
+  resultsEl.textContent = '';
+  if (!results.length && emptyText && q.value.trim()) { resultsEl.append(el('li', 'm', emptyText)); return; }
+  results.forEach((r, i) => {
+    const li = el('li');
+    li.tabIndex = 0;
+    li.dataset.i = i;
+    const p = img(r.poster, 80);
+    if (p) { const im = el('img'); im.src = p; im.alt = ''; li.append(im); } else li.append(el('div', 'ph'));
+    const box = el('div');
+    box.append(el('div', 't', r.title), el('div', 'm', [r.year, r.type, r.stars].filter(Boolean).join(' · ')));
+    li.append(box);
+    resultsEl.append(li);
+  });
+}
+
+// ---------- details ----------
+function fmtRuntime(s) { return !s ? '' : s >= 3600 ? `${Math.floor(s / 3600)}h ${Math.round(s % 3600 / 60)}m` : `${Math.round(s / 60)}m`; }
+
+function renderDetail(d) {
+  const p = img(d.poster, 600);
+  $('poster').src = p || '';
+  $('poster').style.visibility = p ? 'visible' : 'hidden';
+  $('dtitle').textContent = d.title;
+  const meta = $('dmeta'); meta.textContent = '';
+  [d.year, d.type, d.certificate, fmtRuntime(d.runtime)].filter(Boolean).forEach(x => meta.append(el('span', '', x)));
+  if (d.rating) meta.append(el('span', 'rating', `★ ${d.rating}/10`));
+  meta.append(el('span', 'id', d.id));
+  const pills = $('dpills'); pills.textContent = '';
+  if (d.isTv && d.seasons) pills.append(el('span', 'pill tv', `${d.seasons} season${d.seasons === 1 ? '' : 's'}`));
+  if (d.isTv && d.episodes) pills.append(el('span', 'pill tv', `${d.episodes} episodes`));
+  (d.genres || []).forEach(g => pills.append(el('span', 'pill', g)));
+  $('dplot').textContent = d.plot || (d.loading ? 'Loading details…' : '');
+  const cast = $('cast'); cast.textContent = '';
+  (d.cast || []).slice(0, 12).forEach(c => {
+    const a = el('div', 'actor');
+    const ph = img(c.photo, 88);
+    if (ph) { const im = el('img'); im.src = ph; im.alt = ''; a.append(im); } else a.append(el('div', 'ph'));
+    const t = el('div'); t.append(el('div', 'n', c.name)); if (c.character) t.append(el('div', 'c', c.character));
+    a.append(t); cast.append(a);
+  });
+  $('dcastwrap').classList.toggle('hide', !(d.cast || []).length);
+  $('epick').classList.toggle('hide', !d.isTv);
+  if (d.isTv) renderPick();
+}
+
+// ---------- TV shows: season + episode picker ----------
+const range = n => Array.from({ length: n }, (_, i) => i + 1);
+function seasonOptions() {
+  if (current && current.seasonNumbers && current.seasonNumbers.length) return current.seasonNumbers;
+  return range(current && current.seasons ? current.seasons : 30);
+}
+function episodeOptions() { return pick.episodes && pick.episodes.length ? pick.episodes.map(e => e.episode) : range(60); }
+function renderPick() {
+  $('vSeason').textContent = pick.season;
+  $('vEpisode').textContent = pick.episode;
+  const ep = (pick.episodes || []).find(e => e.episode === pick.episode);
+  $('eptitle').textContent = ep && ep.title ? ep.title : '';
+}
+async function loadEpisodes() {
+  const token = ++pick.token, id = current.id, season = pick.season;
+  pick.episodes = null;
+  renderPick();
+  try {
+    const eps = await imdbEpisodes(id, season);
+    if (token !== pick.token) return;
+    pick.episodes = eps.length ? eps : null;
+    const opts = episodeOptions();
+    if (!opts.includes(pick.episode)) pick.episode = opts[0];
+    renderPick();
+  } catch (e) { /* no names: plain numbers still work */ }
+}
+function step(list, value, dir) {
+  const i = list.indexOf(value);
+  return list[Math.max(0, Math.min(list.length - 1, (i < 0 ? 0 : i + dir)))];
+}
+function changePick(which, dir) {
+  if (which === 'season') {
+    const next = step(seasonOptions(), pick.season, dir);
+    if (next === pick.season) return;
+    pick.season = next; pick.episode = 1; loadEpisodes();
+  } else {
+    pick.episode = step(episodeOptions(), pick.episode, dir);
+  }
+  renderPick();
+}
+
+async function openDetail(r) {
+  const same = current && current.id === r.id;
+  current = { ...r, cast: r.cast || (r.stars || '').split(',').map(n => ({ name: n.trim() })).filter(c => c.name) };
+  if (!same) { pick = { season: 1, episode: 1, episodes: null, token: pick.token + 1 }; if (r.isTv) loadEpisodes(); }
+  renderDetail({ ...current, loading: !current.plot });
+  show('detail');
+  (current.isTv && !same ? $('selSeason') : $('openBtn')).focus();
+  if (current.plot) return;
+  const id = r.id;
+  try {
+    const full = await imdbTitle(id, !!r.isTv);
+    if (current && current.id === id) {
+      current = { ...current, ...Object.fromEntries(Object.entries(full).filter(([, v]) =>
+        v !== '' && v != null && !(Array.isArray(v) && !v.length))) };
+      if (current.isTv && !seasonOptions().includes(pick.season)) { pick.season = seasonOptions()[0]; pick.episode = 1; loadEpisodes(); }
+      renderDetail(current);
+    } else if (current && current.id === id) renderDetail(current);
+  } catch (e) { if (current && current.id === id) renderDetail(current); }
+}
+
+// ---------- Open: scrape on the computer, then buffer at top quality, then play ----------
+function loader(status, pct) {
+  $('lstatus').textContent = status;
+  $('lpct').textContent = pct == null ? '' : `${pct}%`;
+  $('lfill').style.width = `${pct || 0}%`;
+}
+
+async function openVideo() {
+  if (!current) return;
+  const tv = !!current.isTv;
+  const t = { ...current, label: tv ? `${current.title} · S${pick.season} E${pick.episode}` : current.title };
+  const token = ++openToken;
+  stopVideo();
+  $('ltitle').textContent = t.label;
+  loader('Finding the video… (up to 30 seconds)', null);
+  show('loader');
+  let d;
+  try { d = await openStream(t, pick.season, pick.episode); }
+  catch (e) { d = { error: 'Could not reach the video site.' }; }
+  if (token !== openToken) return;
+  const list = safeVideos(d);
+  if (!list.length) { loader('No playable video found for this title.', null); return; }
+  const item = list[0];
+  opened = t;
+  loader(`Loading ${item.quality || 'best'} quality…`, 0);
+  attach(item.src);
+  if (hls) hls.on(Hls.Events.ERROR, (_, e) => { if (e.fatal && token === openToken) { stopVideo(); loader('The video failed to load.', null); } });
+  video.onerror = () => { if (token === openToken && screen === 'loader') loader('The video failed to load.', null); };
+
+  // Wait until BUFFER_SECONDS of video (or the whole thing, if shorter) is loaded, showing %.
+  const started = Date.now();
+  let last = 0, lastChange = Date.now();
+  bufferTimer = setInterval(() => {
+    if (token !== openToken) return clearInterval(bufferTimer);
+    let ahead = 0;
+    for (let i = 0; i < video.buffered.length; i++)
+      if (video.buffered.start(i) <= video.currentTime + 0.5) ahead = Math.max(ahead, video.buffered.end(i) - video.currentTime);
+    const dur = isFinite(video.duration) ? video.duration : Infinity;
+    const target = Math.max(1, Math.min(BUFFER_SECONDS, dur - video.currentTime - 0.5));
+    const pct = Math.min(100, Math.floor(ahead / target * 100));
+    if (pct !== last) { last = pct; lastChange = Date.now(); }
+    if (pct >= 100) {
+      clearInterval(bufferTimer);
+      startPlayback(t, item);
+    } else if (Date.now() - lastChange > 60000) {
+      clearInterval(bufferTimer); stopVideo(); loader('The video stopped loading. Try again.', null);
+    } else loader(`Loading ${item.quality || 'best'} quality…${Date.now() - started > 15000 && pct < 5 ? ' (slow connection)' : ''}`, pct);
+  }, 250);
+}
+
+function startPlayback(t, item) {
+  show('player');
+  msg.style.display = 'none';
+  $('title').textContent = t.label || t.title;
+  const ep = t.isTv && (pick.episodes || []).find(e => e.episode === pick.episode);
+  $('desc').textContent = ep && ep.title ? ep.title : '';
+  $('meta').textContent = `${item.quality ? item.quality + '  ·  ' : ''}OK pause/play  ·  ◀ ▶ skip 10s  ·  Back details  ·  ▲ search`;
+  video.play().catch(() => {});
+  showInfo();
+}
+
+// ---------- remote control ----------
+function focusResult(i) { const li = resultsEl.querySelectorAll('li[tabindex]')[i]; if (li) li.focus(); return !!li; }
 
 document.addEventListener('keydown', e => {
-  if (e.key === 'ArrowUp') { showSearch(true); e.preventDefault(); return; }
+  const k = e.key;
+  if (screen === 'search') {
+    const li = document.activeElement.closest && document.activeElement.closest('#results li[tabindex]');
+    if (document.activeElement === q) {
+      if (k === 'ArrowDown') { if (focusResult(0)) e.preventDefault(); }
+      else if (k === 'Enter') { e.preventDefault(); if (results.length) openDetail(results[0]); else runSearch(q.value.trim()); }
+      else if (k === 'Escape') closeOverlay();
+      return; // other keys type into the box
+    }
+    if (li) {
+      const i = +li.dataset.i;
+      if (k === 'ArrowDown') focusResult(i + 1);
+      else if (k === 'ArrowUp') { if (!focusResult(i - 1)) q.focus(); }
+      else if (k === 'Enter') openDetail(results[i]);
+      else return;
+      e.preventDefault();
+    } else q.focus();
+    return;
+  }
+  if (screen === 'detail') {
+    const order = current && current.isTv ? [$('selSeason'), $('selEpisode'), $('openBtn')] : [$('openBtn')];
+    let i = order.indexOf(document.activeElement);
+    if (i < 0) { order[order.length - 1].focus(); i = order.length - 1; }
+    const f = order[i];
+    if (k === 'ArrowDown') order[Math.min(i + 1, order.length - 1)].focus();
+    else if (k === 'ArrowUp') order[Math.max(i - 1, 0)].focus();
+    else if ((k === 'ArrowLeft' || k === 'ArrowRight') && f.id !== 'openBtn')
+      changePick(f.id === 'selSeason' ? 'season' : 'episode', k === 'ArrowRight' ? 1 : -1);
+    else if (k === 'Enter') { if (f.id === 'openBtn') openVideo(); else order[i + 1].focus(); }
+    else return;
+    e.preventDefault();
+    return;
+  }
+  if (screen === 'loader') return;
+  // player
+  if (k === 'ArrowUp') { e.preventDefault(); openSearch(); return; }
+  if (opened) {
+    if (k === 'ArrowRight') video.currentTime = Math.min(video.duration || Infinity, video.currentTime + 10);
+    else if (k === 'ArrowLeft') video.currentTime = Math.max(0, video.currentTime - 10);
+    else if (k === 'Enter' || k === ' ' || k === 'MediaPlayPause') video.paused ? video.play() : video.pause();
+    else return showInfo();
+    showInfo(); e.preventDefault(); return;
+  }
   if (!videos.length) return;
-  if (e.key === 'ArrowRight') play(index + 1);
-  else if (e.key === 'ArrowLeft') play(index - 1);
-  else if (e.key === 'Enter' || e.key === ' ' || e.key === 'MediaPlayPause') video.paused ? video.play() : video.pause();
-  else { showInfo(); showSearch(false); return; }
+  if (k === 'ArrowRight') play(index + 1);
+  else if (k === 'ArrowLeft') play(index - 1);
+  else if (k === 'Enter' || k === ' ' || k === 'MediaPlayPause') video.paused ? video.play() : video.pause();
+  else { showInfo(); return; }
   e.preventDefault();
 });
 
+function closeOverlay() {
+  q.blur();
+  show('player');
+  if (video.currentSrc && video.paused) video.play().catch(() => {});
+  if (!video.currentSrc) { msg.style.display = 'flex'; msg.textContent = 'Press ▲ on the remote to search.'; }
+}
+
+// Called by the TV app when Back is pressed. Return true = handled, false = exit the app.
+window.onTvBack = () => {
+  if (screen === 'loader') { openToken++; stopVideo(); opened = null; show('detail'); $('openBtn').focus(); return true; }
+  if (screen === 'detail') { show('search'); const i = results.findIndex(r => current && r.id === current.id); if (!focusResult(i)) q.focus(); return true; }
+  if (screen === 'search') { closeOverlay(); return true; }
+  if (opened) { video.pause(); openDetail(opened); return true; }
+  return false;
+};
+
+// ---------- start: default video list if there is one, otherwise straight to search ----------
 fetch('videos.json?t=' + Date.now(), { cache: 'no-store' })
   .then(r => r.json())
-  .then(d => { if (!setVideos(d)) throw new Error('no videos'); showSearch(false); })
-  .catch(() => { msg.textContent = 'Press ▲ on the remote to search.'; showSearch(true); });
+  .then(d => { videos = safeVideos(d); if (!videos.length) throw new Error('no videos'); play(0); })
+  .catch(() => openSearch());
 </script>
 </body>
 </html>

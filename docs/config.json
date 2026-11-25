@@ -1,1 +1,5 @@
-{"searchServer": ""}
+{
+  "openUrl": "https://test.com/{imdb_id}",
+  "openUrlTv": "https://test.com/{imdb_id}_{season}_{episode}",
+  "dataHosts": ["v3.sg.media-imdb.com", "caching.graphql.imdb.com", "api.tvmaze.com"]
+}

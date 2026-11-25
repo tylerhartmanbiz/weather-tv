@@ -1,5 +1,6 @@
 package app.weathertv;
 
+import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.graphics.Color;
 import android.net.Uri;
@@ -9,23 +10,25 @@ import android.view.KeyEvent;
 import android.webkit.DownloadListener;
 import android.webkit.JsPromptResult;
 import android.webkit.JsResult;
+import android.webkit.PermissionRequest;
+import android.webkit.RenderProcessGoneDetail;
+import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
 
 import java.io.ByteArrayInputStream;
-import java.util.HashMap;
-import java.util.Map;
-import java.io.ByteArrayOutputStream;
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -33,37 +36,60 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * Thin, locked-down shell. The whole UI is docs/index.html on GitHub Pages, so changes
- * pushed to the repo show up on the next launch (or press Menu to reload) with no reinstall.
+ * Thin, locked-down shell that does everything on the TV (no computer needed).
  *
- * Safety: the WebView can only talk over https to our own page, the pinned player library,
- * and the video/image hosts that scrapper.py lists in videos.json ("allowedHosts"), so
- * changing the scraped website never needs a new APK. Every other request is refused.
- * Navigation to any other page/app is blocked, popups/new windows are refused (and closed
- * if one ever appears), JS alert/confirm/prompt dialogs are suppressed, downloads are
- * ignored, and it has no access to the TV's files. Videos are streamed, never saved.
+ * The whole UI is docs/index.html on GitHub Pages, and the video website's address is in
+ * docs/config.json, so changes pushed to the repo show up on the next launch (or press
+ * Menu to reload) with no reinstall.
+ *
+ * The page asks this shell for two things (same-origin URLs it intercepts):
+ *   api/fetch?url=...[&post=json]   read JSON from an approved data host (IMDb), as text
+ *   api/open?url=...                open the video site hidden + sandboxed (Scraper) and
+ *                                   return its checked video stream link
+ *
+ * Safety: the app's own WebView only talks https to this app page, the pinned player
+ * library, IMDb/TVmaze image hosts, and the video hosts a checked stream needs. Everything else is
+ * refused. It never loads the video website itself. Navigation to any other page/app is
+ * blocked, popups refused, dialogs suppressed, downloads ignored, no file access. The app
+ * has only the INTERNET permission, and no cleartext (http) traffic at all.
  */
 public class MainActivity extends Activity {
     private static final String APP_URL = "https://tylerhartmanbiz.github.io/weather-tv/";
-    private static final Set<String> BASE_HOSTS = new HashSet<String>(Arrays.asList(
-            "tylerhartmanbiz.github.io", // the app page + videos.json
-            "cdn.jsdelivr.net"));        // pinned hls.js player (integrity-checked)
-    private static final String HOST_RE = "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$";
-    // Search server on your computer (from docs/config.json). Only private LAN addresses accepted.
-    private static final String LAN_RE =
-            "^http://(10\\.\\d+|192\\.168|172\\.(1[6-9]|2\\d|3[01]))\\.\\d+\\.\\d+:\\d{2,5}$";
+    private static final String APP_HOST = "tylerhartmanbiz.github.io";
     private static final String API_PREFIX = "/weather-tv/api/";
-    private volatile String searchServer = null;
-    private final Set<String> allowedHosts = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+    private static final Set<String> BASE_HOSTS = new HashSet<String>(Arrays.asList(
+            APP_HOST,               // the app page, config.json, videos.json
+            "cdn.jsdelivr.net",     // pinned hls.js player (integrity-checked)
+            "static.tvmaze.com",    // TV show posters / cast photos
+            "m.media-amazon.com")); // IMDb posters / cast photos
+    private static final List<String> DEFAULT_DATA_HOSTS = Arrays.asList(
+            "v3.sg.media-imdb.com", "caching.graphql.imdb.com", "api.tvmaze.com");
 
+    private final Set<String> allowedHosts = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+    private final Set<String> dataHosts = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+    private final Set<String> openSites = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+    private final Object scrapeLock = new Object();
+
+    private FrameLayout root;
     private WebView web;
 
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        root = new FrameLayout(this);
+        root.setBackgroundColor(Color.BLACK);
+        setContentView(root);
+        Scraper.blockServiceWorkers();
+        createWebView();
+        reload();
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private void createWebView() {
         web = new WebView(this);
         web.setBackgroundColor(Color.BLACK);
-        setContentView(web);
+        root.addView(web, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT));
 
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
@@ -81,9 +107,7 @@ public class MainActivity extends Activity {
         s.setCacheMode(WebSettings.LOAD_NO_CACHE); // always fetch the latest app page
 
         web.setDownloadListener(new DownloadListener() {
-            public void onDownloadStart(String u, String ua, String cd, String mime, long len) {
-                // Ignore all downloads.
-            }
+            public void onDownloadStart(String u, String ua, String cd, String mime, long len) { /* ignore */ }
         });
         web.setWebViewClient(new WebViewClient() {
             @Override
@@ -94,25 +118,30 @@ public class MainActivity extends Activity {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest r) {
                 Uri u = r.getUrl();
-                if ("tylerhartmanbiz.github.io".equals(u.getHost()) && u.getPath() != null
-                        && u.getPath().startsWith(API_PREFIX) && "GET".equals(r.getMethod())) {
-                    return proxyToSearchServer(u);
+                String path = u.getPath() == null ? "" : u.getPath();
+                if (APP_HOST.equals(u.getHost()) && path.startsWith(API_PREFIX) && "GET".equals(r.getMethod())) {
+                    return api(path.substring(API_PREFIX.length()), u);
                 }
                 if ("https".equals(u.getScheme()) && allowedHosts.contains(u.getHost())) return null;
-                return new WebResourceResponse("text/plain", "utf-8", 403, "Blocked", null,
-                        new ByteArrayInputStream(new byte[0]));
+                return Scraper.blocked();
+            }
+
+            @Override
+            public boolean onRenderProcessGone(WebView v, RenderProcessGoneDetail d) {
+                // A web page crashed the (shared) WebView renderer: rebuild instead of crashing.
+                root.removeAllViews();
+                v.destroy();
+                createWebView();
+                reload();
+                return true;
             }
         });
         web.setWebChromeClient(new WebChromeClient() {
             @Override
-            public boolean onCreateWindow(WebView v, boolean dialog, boolean gesture, Message m) {
-                return false; // refuse every popup / new window
-            }
+            public boolean onCreateWindow(WebView v, boolean dialog, boolean gesture, Message m) { return false; }
 
             @Override
-            public void onCloseWindow(WebView w) {
-                if (w != web) w.destroy();
-            }
+            public void onPermissionRequest(PermissionRequest r) { r.deny(); }
 
             @Override
             public boolean onJsAlert(WebView v, String url, String msg, JsResult r) { r.cancel(); return true; }
@@ -126,19 +155,39 @@ public class MainActivity extends Activity {
             @Override
             public boolean onJsBeforeUnload(WebView v, String url, String msg, JsResult r) { r.cancel(); return true; }
         });
-
-        reload();
     }
 
-    /** Refresh the host allowlist from videos.json, then (re)load the app page. */
+    /** Re-read config.json + videos.json, then (re)load the app page. */
     private void reload() {
         new Thread(new Runnable() { public void run() {
-            Set<String> hosts = fetchAllowedHosts();
-            String server = fetchSearchServer();
-            searchServer = server;
-            allowedHosts.clear();
-            allowedHosts.addAll(BASE_HOSTS);
-            allowedHosts.addAll(hosts);
+            Set<String> hosts = new HashSet<String>(BASE_HOSTS);
+            Set<String> data = new HashSet<String>(DEFAULT_DATA_HOSTS);
+            Set<String> sites = new HashSet<String>();
+            try {
+                JSONObject cfg = new JSONObject(appFile("config.json"));
+                for (String k : new String[]{"openUrl", "openUrlTv"}) {
+                    String t = cfg.optString(k, "");
+                    if (t.isEmpty()) continue;
+                    String host = Net.checkUrl(t.replace("{imdb_id}", "tt0000000")
+                            .replace("{season}", "1").replace("{episode}", "1"));
+                    sites.add(Net.siteOf(host));
+                }
+                JSONArray d = cfg.optJSONArray("dataHosts");
+                for (int i = 0; d != null && i < d.length() && i < 20; i++) {
+                    String h = d.optString(i, "").toLowerCase(Locale.ROOT);
+                    if (Net.isPublicHostname(h)) data.add(h);
+                }
+            } catch (Exception ignored) { }
+            try {
+                JSONArray arr = new JSONObject(appFile("videos.json")).optJSONArray("allowedHosts");
+                for (int i = 0; arr != null && i < arr.length() && i < 20; i++) {
+                    String h = arr.optString(i, "").toLowerCase(Locale.ROOT);
+                    if (Net.isPublicHostname(h)) hosts.add(h);
+                }
+            } catch (Exception ignored) { }
+            allowedHosts.clear(); allowedHosts.addAll(hosts);
+            dataHosts.clear(); dataHosts.addAll(data);
+            openSites.clear(); openSites.addAll(sites);
             runOnUiThread(new Runnable() { public void run() {
                 web.loadUrl(APP_URL + "?t=" + System.currentTimeMillis());
                 web.requestFocus();
@@ -146,72 +195,79 @@ public class MainActivity extends Activity {
         }}).start();
     }
 
-    private static String get(String url, int timeoutMs) {
-        try {
-            HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-            c.setConnectTimeout(8000);
-            c.setReadTimeout(timeoutMs);
-            c.setUseCaches(false);
-            c.setInstanceFollowRedirects(false);
-            if (c.getResponseCode() != 200) return null;
-            InputStream in = c.getInputStream();
-            ByteArrayOutputStream buf = new ByteArrayOutputStream();
-            byte[] b = new byte[8192];
-            int n;
-            while ((n = in.read(b)) > 0 && buf.size() < 2_000_000) buf.write(b, 0, n);
-            in.close();
-            return buf.toString("UTF-8");
-        } catch (Exception e) {
-            return null;
-        }
+    private static String appFile(String name) throws Exception {
+        Net.Resp r = Net.fetch(APP_URL + name + "?t=" + System.currentTimeMillis(), null, "application/json", 500_000, null);
+        if (r.status != 200) throw new Exception("HTTP " + r.status);
+        return r.text;
     }
 
-    private static Set<String> hostsFrom(String json) {
-        Set<String> out = new HashSet<String>();
+    // ---------- api/ for the page ----------
+
+    private WebResourceResponse api(String name, Uri u) {
+        int code = 200;
+        String type = "application/json";
+        String body;
         try {
-            JSONArray arr = new JSONObject(json).optJSONArray("allowedHosts");
-            for (int i = 0; arr != null && i < arr.length() && i < 20; i++) {
-                String h = arr.optString(i, "").toLowerCase();
-                if (h.matches(HOST_RE)) out.add(h);
+            if ("fetch".equals(name)) {
+                String url = u.getQueryParameter("url");
+                String post = u.getQueryParameter("post");
+                String host = Net.checkUrl(url == null ? "" : url);
+                if (!dataHosts.contains(host)) throw new Exception("host not allowed");
+                Net.Resp r = Net.fetch(url, post, "application/json", 4_000_000, null);
+                code = r.status;
+                body = r.text;
+            } else if ("open".equals(name)) {
+                body = open(u.getQueryParameter("url")).toString();
+            } else {
+                code = 404;
+                body = "{\"error\":\"not found\"}";
             }
-        } catch (Exception ignored) { }
-        return out;
-    }
-
-    private static Set<String> fetchAllowedHosts() {
-        String s = get(APP_URL + "videos.json?t=" + System.currentTimeMillis(), 8000);
-        return s == null ? new HashSet<String>() : hostsFrom(s);
-    }
-
-    private static String fetchSearchServer() {
-        try {
-            String s = get(APP_URL + "config.json?t=" + System.currentTimeMillis(), 8000);
-            String addr = s == null ? "" : new JSONObject(s).optString("searchServer", "");
-            return addr.matches(LAN_RE) ? addr : null;
         } catch (Exception e) {
-            return null;
+            code = 502;
+            body = "{\"error\":" + JSONObject.quote(String.valueOf(e.getMessage())) + "}";
         }
-    }
-
-    /** Forward /api/... to the search server on your computer; allow the hosts it returns. */
-    private WebResourceResponse proxyToSearchServer(Uri u) {
-        String server = searchServer;
-        String body = null;
-        if (server != null) {
-            String q = u.getEncodedQuery();
-            body = get(server + "/api/" + u.getPath().substring(API_PREFIX.length()) + (q == null ? "" : "?" + q), 90000);
-        }
-        if (body == null) body = "{\"videos\":[],\"error\":\"search server unreachable\"}";
-        else allowedHosts.addAll(hostsFrom(body));
         Map<String, String> h = new HashMap<String, String>();
         h.put("Cache-Control", "no-store");
         try {
-            return new WebResourceResponse("application/json", "utf-8", 200, "OK", h,
-                    new ByteArrayInputStream(body.getBytes("UTF-8")));
+            return new WebResourceResponse(type, "utf-8", code < 100 || code > 599 ? 502 : code,
+                    code == 200 ? "OK" : "Error", h, new ByteArrayInputStream(body.getBytes("UTF-8")));
         } catch (Exception e) {
-            return null;
+            return Scraper.blocked();
         }
     }
+
+    /** Open the video site hidden + sandboxed, then check the stream it uses. */
+    private JSONObject open(String url) throws Exception {
+        String host = Net.checkUrl(url == null ? "" : url);
+        String site = Net.siteOf(host);
+        if (!openSites.contains(site)) throw new Exception("site not in config.json");
+        JSONObject out = new JSONObject();
+        List<String> candidates;
+        synchronized (scrapeLock) { // one hidden browser at a time
+            candidates = Scraper.scrape(this, root, url, site);
+        }
+        int tried = 0;
+        for (String src : candidates) {
+            if (++tried > 8) break;
+            try {
+                Net.Stream s = Net.inspect(src);
+                allowedHosts.addAll(s.hosts); // the player may now stream from exactly these hosts
+                JSONObject v = new JSONObject();
+                v.put("src", src);
+                v.put("quality", s.quality);
+                out.put("videos", new JSONArray().put(v));
+                out.put("allowedHosts", new JSONArray(s.hosts));
+                return out;
+            } catch (Exception ignored) {
+                // unsafe or not a real stream: try the next one
+            }
+        }
+        out.put("videos", new JSONArray());
+        out.put("error", candidates.isEmpty() ? "no video found on the page" : "no playable video found");
+        return out;
+    }
+
+    // ---------- remote ----------
 
     @Override
     public boolean onKeyDown(int code, KeyEvent e) {
@@ -221,9 +277,9 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        // Back closes the search box if it's open, otherwise exits the app.
+        // Back steps back through the app's screens; on the first screen it exits.
         web.evaluateJavascript("(function(){try{return window.onTvBack&&window.onTvBack()?'1':'0'}catch(e){return '0'}})()",
-                new android.webkit.ValueCallback<String>() {
+                new ValueCallback<String>() {
                     public void onReceiveValue(String r) { if (!"\"1\"".equals(r)) finish(); }
                 });
     }
