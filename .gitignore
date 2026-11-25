@@ -4,3 +4,4 @@ app/build/
 __pycache__/
 .DS_Store
 signing-key-password.txt
+.playwright-mcp/
