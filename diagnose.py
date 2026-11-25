@@ -61,13 +61,6 @@ SCAN_JS = r"""() => { const o = [];
     while ((m = re.exec(h)) && o.length < 50) o.push(m[0]);
   } catch (x) {}
   return o.filter(s => s.startsWith('https://') && /\.(m3u8|mp4)$/i.test(new URL(s).pathname)); }"""
-# Same as Scraper.PLAYER_JS: center of the biggest visible player-like element.
-PLAYER_JS = """() => { let b = null, a = 0; const W = innerWidth, H = innerHeight;
-  document.querySelectorAll('video,iframe,embed,object,canvas').forEach(e => {
-    const r = e.getBoundingClientRect(); if (r.width < 200 || r.height < 120) return;
-    const s = Math.max(0, Math.min(r.right, W) - Math.max(r.left, 0)) * Math.max(0, Math.min(r.bottom, H) - Math.max(r.top, 0));
-    if (s > a) { a = s; b = r; } });
-  return b ? [(Math.max(b.left, 0) + Math.min(b.right, W)) / 2, (Math.max(b.top, 0) + Math.min(b.bottom, H)) / 2] : null; }"""
 PLAY_JS = """() => { try { document.querySelectorAll('video').forEach(v => {
   v.muted = true; const p = v.play(); if (p && p.catch) p.catch(() => {}); }); } catch (x) {} }"""
 CHALLENGE = re.compile(r"just a moment|cf-challenge|challenge-platform|captcha|are you a robot|"
@@ -293,7 +286,7 @@ def visit(url, ua):
     ev = {"tv_found": [], "media_no_ext": [], "blocked_main": [], "blocked_http": 0, "popups": 0,
           "popups_after_click": 0, "main_status": None, "main_error": "", "title": "", "challenge": False,
           "frames": [], "dom_main": [], "dom_frames": [], "playlist_no_ext": [], "late": [],
-          "extra_click": [], "clicks": [], "before_clicks": 0, "error": ""}
+          "extra_click": [], "steps": [], "before_clicks": 0, "error": ""}
     t0 = time.time()
     responses = []
     clicked = [False]
@@ -352,20 +345,31 @@ def visit(url, ua):
             end = time.time() + seconds
             while time.time() < end and not until():
                 page.wait_for_timeout(250)
+            return bool(until())
 
-        def click():
+        def click(n):
             clicked[0] = True
+            ev["steps"].append(f"{now():5}s click {n} in the middle of the screen")
             try:
-                pos = page.evaluate(PLAYER_JS)
-            except Exception:
-                pos = None
-            ev["clicks"].append("on the player" if pos else "in the middle (no player found)")
-            x, y = (pos or (640, 360))
-            try:
-                page.mouse.click(max(1, min(1279, x)), max(1, min(719, y)))
+                page.mouse.click(640, 360)
                 page.evaluate(PLAY_JS)
             except Exception:
                 pass
+
+        def found():
+            return bool(ev["tv_found"] or ev["dom_main"])
+
+        def look(when):
+            # Same as the TV's lookFor: links the page asked for + links in the main page's HTML.
+            try:
+                for u in page.main_frame.evaluate(SCAN_JS):
+                    if u not in ev["dom_main"]:
+                        ev["dom_main"].append(u)
+            except Exception:
+                pass
+            n = len(ev["tv_found"]) + len(ev["dom_main"])
+            ev["steps"].append(f"{now():5}s looked for the video {when}: " + (f"{n} link(s)" if n else "none yet"))
+            return found()
 
         try:
             try:
@@ -373,42 +377,43 @@ def visit(url, ua):
                 ev["main_status"] = first.status if first else None
             except Exception as e:
                 ev["main_error"] = str(e).splitlines()[0][:200]
-            # The TV: let the page load (max 6 s) + 1 s, click the player once, wait 3 s for a
-            # new video link; if none, click again and wait up to 15 s; then 1.5 s more.
+            # The TV: wait for the page to load (max 10 s), click the middle, wait 5 s, click the
+            # middle again, wait 10 s. Look after every step; stop as soon as a video is found.
             try:
-                page.wait_for_load_state("load", timeout=6000)
+                page.wait_for_load_state("load", timeout=10000)
             except Exception:
                 pass
-            wait(1)
-            before = ev["before_clicks"] = len(ev["tv_found"])
-            click()
-            wait(3, lambda: len(ev["tv_found"]) > before)
-            if len(ev["tv_found"]) == before:
-                click()
-                wait(4 if before else 15, lambda: len(ev["tv_found"]) > before)
-            wait(1.5)
+            if not look("after loading"):
+                ev["before_clicks"] = 0
+                click(1)
+                if not look("after click 1") and not (wait(5, found) or look("5 s after click 1")):
+                    click(2)
+                    if not look("after click 2") and not (wait(10, found) or look("10 s after click 2")):
+                        ev["steps"].append(f"{now():5}s NO VIDEO FOUND: the TV shows its error here")
+            else:
+                ev["before_clicks"] = len(ev["tv_found"]) + len(ev["dom_main"])
+            if found():
+                wait(1.5)
             tv_window = now()
             for f in page.frames:
-                try:
-                    links = f.evaluate(SCAN_JS)
-                except Exception:
-                    links = []
                 if f == page.main_frame:
-                    ev["dom_main"] = links
-                else:
-                    ev["frames"].append(f.url)
-                    ev["dom_frames"] += links
+                    continue
+                ev["frames"].append(f.url)
+                try:
+                    ev["dom_frames"] += f.evaluate(SCAN_JS)
+                except Exception:
+                    pass
             try:
                 ev["title"] = page.title()
                 ev["challenge"] = bool(CHALLENGE.search(ev["title"] + " " + page.content()[:200000]))
             except Exception:
                 pass
-            # Beyond what the TV does: if nothing new yet, click a third time, then wait longer.
-            if len(ev["tv_found"]) == before:
-                click()
-                wait(10, lambda: len(ev["tv_found"]) > before)
-                ev["extra_click"] = ev["tv_found"][before:]
-                wait(10, lambda: len(ev["tv_found"]) > before)
+            # Beyond what the TV does: if nothing yet, click a third time, then wait longer.
+            if not found():
+                click(3)
+                wait(10, lambda: ev["tv_found"])
+                ev["extra_click"] = list(ev["tv_found"])
+                wait(10, lambda: ev["tv_found"])
             ev["late"] = [(t, u) for t, u in ev["tv_found"] if t > tv_window]
             # Video playlists at addresses without .m3u8 (the TV can't recognise those).
             seen = {u for _, u in ev["tv_found"]}
@@ -448,9 +453,9 @@ CAUSES = {
     "REDIRECT_OTHER_SITE": "The page tried to move to a different website, which the TV blocks. The "
                            "page that holds the player may live on another domain.",
     "VIDEO_NEEDS_MORE_CLICKS": "The video only started after a third click (the first ones probably "
-                               "hit ads / overlays). The TV clicks at most twice.",
+                               "hit ads / overlays). The TV clicks twice.",
     "VIDEO_TOO_SLOW": "The page did ask for the video, but only after the TV had already given up "
-                      "(about 27 s).",
+                      "(10 s after its second click).",
     "VIDEO_URL_NO_EXTENSION": "The player loads its video from an address that doesn't end in "
                               ".m3u8 or .mp4, so the TV never notices it.",
     "VIDEO_ONLY_IN_IFRAME_HTML": "A video link is written inside an embedded player (iframe), but "
@@ -538,8 +543,7 @@ def main():
                f"title: {ev['title']!r}",
                f"bot-check / captcha words on page: {ev['challenge']}",
                f"popups refused: {ev['popups']} ({ev['popups_after_click']} after clicking)",
-               "clicks: " + (", ".join(ev["clicks"]) or "none"),
-               f"video links found before the first click: {ev['before_clicks']}",
+               "what happened, step by step (like the TV):", *[f"    {x}" for x in ev["steps"]],
                f"plain-http requests blocked: {ev['blocked_http']}",
                f"embedded frames ({len(ev['frames'])}):", *[f"    {f}" for f in ev["frames"]],
                "main page tried to go to another site (blocked, like the TV: it stays on the video site):",
@@ -561,7 +565,7 @@ def main():
         # ---- 2. find
         tv_links = [u for _, u in tv_found]
         tv_links += [u for u in ev["dom_main"] if u not in [x for _, x in tv_found]]
-        detail("== 2. find: video links the TV would notice (within its ~27 s)",
+        detail("== 2. find: video links the TV would notice (after loading, 2 clicks, 5 s + 10 s)",
                *[f"    {t:5}s {u}" for t, u in tv_found] or ["    none from network"],
                "  in the main page's HTML:", *[f"    {u}" for u in ev["dom_main"]] or ["    none"],
                "  -- links the TV would MISS --",
@@ -575,7 +579,9 @@ def main():
                "")
         if not cause[0]:
             if tv_links:
-                step("2. TV finds a video link", True, f"{len(tv_links)} link(s)")
+                when = next((x.split("looked for the video ")[1].split(":")[0] for x in ev["steps"]
+                             if "looked for the video" in x and "none yet" not in x), "")
+                step("2. TV finds a video link", True, f"{len(tv_links)} link(s), found {when}")
             else:
                 if ev["extra_click"]:
                     code = "VIDEO_NEEDS_MORE_CLICKS"
@@ -593,12 +599,7 @@ def main():
                 fail(code)
 
         # ---- 3. check + 4. play, for each candidate the TV would try (max 8, HLS first)
-        after = [u for _, u in tv_found[ev["before_clicks"]:]]
-        cands = []
-        for group in (after, tv_links):
-            cands += [u for u in group if ".m3u8" in u.lower() and u not in cands]
-            cands += [u for u in group if u not in cands]
-        cands = cands[:8]
+        cands = sorted(dict.fromkeys(tv_links), key=lambda u: ".m3u8" not in u.lower())[:8]
         if not cands and cause[0] in ("VIDEO_NEEDS_MORE_CLICKS", "VIDEO_TOO_SLOW"):
             cands = [u for _, u in ev["late"]][:8]   # still check them, to know what comes next
         accepted = None

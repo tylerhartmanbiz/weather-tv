@@ -31,7 +31,6 @@ import android.widget.FrameLayout;
 
 import java.io.ByteArrayInputStream;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -84,14 +83,6 @@ final class Scraper {
             + "var re=/https:\\/\\/[^\"'\\s<>\\\\]+?\\.(?:m3u8|mp4)(?:\\?[^\"'\\s<>\\\\]*)?/gi,m;"
             + "while((m=re.exec(h))&&o.length<50)o.push(m[0]);"
             + "}catch(x){}return o})()";
-    /** Center (CSS px) of the biggest visible player-like element, plus the page width; or null. */
-    private static final String PLAYER_JS = "(function(){try{var b=null,a=0,W=innerWidth,H=innerHeight;"
-            + "document.querySelectorAll('video,iframe,embed,object,canvas').forEach(function(e){"
-            + "var r=e.getBoundingClientRect();if(r.width<200||r.height<120)return;"
-            + "var s=Math.max(0,Math.min(r.right,W)-Math.max(r.left,0))*Math.max(0,Math.min(r.bottom,H)-Math.max(r.top,0));"
-            + "if(s>a){a=s;b=r}});"
-            + "if(!b)return null;return[(Math.max(b.left,0)+Math.min(b.right,W))/2,(Math.max(b.top,0)+Math.min(b.bottom,H))/2,W]"
-            + "}catch(x){return null}})()";
     private static final String PLAY_JS = "(function(){try{document.querySelectorAll('video').forEach(function(v){"
             + "v.muted=true;var p=v.play();if(p&&p.catch)p.catch(function(){})})}catch(x){}})()";
 
@@ -137,21 +128,51 @@ final class Scraper {
             w.loadUrl(url);
         }});
 
-        // Let the page (and its player) load, then press play like a person would: once
-        // always (the first click often only dismisses an overlay or ad), and a second time
-        // if no new video link showed up. Popups those clicks trigger are refused.
-        loaded.await(6, TimeUnit.SECONDS);
-        Thread.sleep(1000);
-        int before = found.size();
-        click(act, holder, 1);
-        if (!waitForVideo(found, before, crashed, 3000)) {
-            click(act, holder, 2);
-            // Something already loaded with the page? Then don't wait long for anything newer.
-            waitForVideo(found, before, crashed, before > 0 ? 4000 : 15000);
+        // Exactly like a person: wait for the page to load, click the middle of the screen,
+        // wait 5 s, click the middle again, wait 10 s. Look for the video after every step and
+        // stop as soon as it's found. Popups / other sites the clicks try to open are refused.
+        // (The page's network requests are watched the whole time, see shouldInterceptRequest.)
+        loaded.await(10, TimeUnit.SECONDS);
+        if (!lookFor(act, holder, found, "after loading")) {
+            click(act, holder, 1);
+            if (!lookFor(act, holder, found, "after click 1")
+                    && !(waitForVideo(found, crashed, 5000) | lookFor(act, holder, found, "5 s after click 1"))) {
+                click(act, holder, 2);
+                if (!lookFor(act, holder, found, "after click 2")
+                        && !(waitForVideo(found, crashed, 10000) | lookFor(act, holder, found, "10 s after click 2"))) {
+                    log("NO VIDEO FOUND after loading, 2 clicks and 15 s", null);
+                }
+            }
         }
-        Thread.sleep(1500); // let the player finish asking for its playlists
+        if (!found.isEmpty()) Thread.sleep(1500); // let the player finish asking for its playlists
 
-        // Also look for video links written in the page itself.
+        final CountDownLatch gone = new CountDownLatch(1);
+        act.runOnUiThread(new Runnable() { public void run() {
+            destroy(root, holder[0], true);
+            holder[0] = null;
+            gone.countDown();
+        }});
+        gone.await(5, TimeUnit.SECONDS);
+        log("sandbox wiped and destroyed", null);
+
+        List<String> out = new ArrayList<String>();
+        synchronized (found) {
+            for (String s : found) if (s.toLowerCase(Locale.ROOT).contains(".m3u8")) out.add(s);
+            for (String s : found) if (!out.contains(s)) out.add(s);
+        }
+        return out;
+    }
+
+    /** Wait until a video link is found (true), the time is up, or the sandbox crashed. */
+    private static boolean waitForVideo(Set<String> found, AtomicBoolean crashed, long ms) throws InterruptedException {
+        long end = SystemClock.uptimeMillis() + ms;
+        while (SystemClock.uptimeMillis() < end && !crashed.get() && found.isEmpty()) Thread.sleep(200);
+        return !found.isEmpty();
+    }
+
+    /** Search for the video now: links the page already asked for, plus links in its HTML. */
+    private static boolean lookFor(final Activity act, final WebView[] holder, final Set<String> found, String when)
+            throws InterruptedException {
         final CountDownLatch scanned = new CountDownLatch(1);
         act.runOnUiThread(new Runnable() { public void run() {
             WebView w = holder[0];
@@ -163,81 +184,39 @@ final class Scraper {
                         for (int i = 0; i < a.length() && i < 50; i++) {
                             String s = a.optString(i, "");
                             String path = Uri.parse(s).getPath();
-                            if (s.startsWith("https://") && path != null
-                                    && endsWithAny(path.toLowerCase(Locale.ROOT), VIDEO_EXT)) found.add(s);
+                            if (s.startsWith("https://") && path != null && found.size() < 50
+                                    && endsWithAny(path.toLowerCase(Locale.ROOT), VIDEO_EXT)
+                                    && found.add(s)) log("video link found in the page", s);
                         }
                     } catch (Exception ignored) { }
                     scanned.countDown();
                 }
             });
         }});
-        scanned.await(4, TimeUnit.SECONDS);
-
-        final CountDownLatch gone = new CountDownLatch(1);
-        act.runOnUiThread(new Runnable() { public void run() {
-            destroy(root, holder[0], true);
-            holder[0] = null;
-            gone.countDown();
-        }});
-        gone.await(5, TimeUnit.SECONDS);
-        log("sandbox wiped and destroyed", null);
-
-        // Try first what the page asked for after the clicks (the real video; something that
-        // loaded with the page is more likely a preview or an ad), HLS before .mp4.
-        List<String> all, out = new ArrayList<String>();
-        synchronized (found) { all = new ArrayList<String>(found); }
-        List<String> afterClick = all.subList(Math.min(before, all.size()), all.size());
-        for (List<String> group : Arrays.asList(afterClick, all)) {
-            for (String s : group) if (s.toLowerCase(Locale.ROOT).contains(".m3u8") && !out.contains(s)) out.add(s);
-            for (String s : group) if (!out.contains(s)) out.add(s);
-        }
-        return out;
+        scanned.await(3, TimeUnit.SECONDS);
+        boolean got = !found.isEmpty();
+        log("looked for the video " + when + ": " + (got ? found.size() + " link(s)" : "none yet"), null);
+        return got;
     }
 
-    /** Wait until a new video link is found (true), the time is up, or the sandbox crashed. */
-    private static boolean waitForVideo(Set<String> found, int before, AtomicBoolean crashed, long ms)
-            throws InterruptedException {
-        long end = SystemClock.uptimeMillis() + ms;
-        while (SystemClock.uptimeMillis() < end && !crashed.get()) {
-            if (found.size() > before) return true;
-            Thread.sleep(200);
-        }
-        return found.size() > before;
-    }
-
-    /** Tap the middle of the page's player (or of the page), then ask its videos to play. */
+    /** Tap the middle of the screen, then ask the page's videos to play. */
     private static void click(final Activity act, final WebView[] holder, final int n) throws InterruptedException {
         final CountDownLatch done = new CountDownLatch(1);
         act.runOnUiThread(new Runnable() { public void run() {
-            final WebView w = holder[0];
-            if (w == null) { done.countDown(); return; }
-            w.evaluateJavascript(PLAYER_JS, new ValueCallback<String>() {
-                public void onReceiveValue(String v) {
-                    try {
-                        if (holder[0] != w) return;
-                        float x = w.getWidth() / 2f, y = w.getHeight() / 2f;
-                        try {
-                            JSONArray p = new JSONArray(v);
-                            double scale = w.getWidth() / Math.max(1.0, p.getDouble(2));
-                            x = (float) Math.max(1, Math.min(w.getWidth() - 1, p.getDouble(0) * scale));
-                            y = (float) Math.max(1, Math.min(w.getHeight() - 1, p.getDouble(1) * scale));
-                            log("click " + n + " on the player", null);
-                        } catch (Exception noPlayer) {
-                            log("click " + n + " in the middle (no player found on the page)", null);
-                        }
-                        long t = SystemClock.uptimeMillis();
-                        MotionEvent down = MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, x, y, 0);
-                        MotionEvent up = MotionEvent.obtain(t, t + 80, MotionEvent.ACTION_UP, x, y, 0);
-                        w.dispatchTouchEvent(down);
-                        w.dispatchTouchEvent(up);
-                        down.recycle();
-                        up.recycle();
-                        w.evaluateJavascript(PLAY_JS, null);
-                    } finally {
-                        done.countDown();
-                    }
-                }
-            });
+            WebView w = holder[0];
+            if (w != null) {
+                log("click " + n + " in the middle of the screen", null);
+                long t = SystemClock.uptimeMillis();
+                float x = w.getWidth() / 2f, y = w.getHeight() / 2f;
+                MotionEvent down = MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, x, y, 0);
+                MotionEvent up = MotionEvent.obtain(t, t + 80, MotionEvent.ACTION_UP, x, y, 0);
+                w.dispatchTouchEvent(down);
+                w.dispatchTouchEvent(up);
+                down.recycle();
+                up.recycle();
+                w.evaluateJavascript(PLAY_JS, null);
+            }
+            done.countDown();
         }});
         done.await(3, TimeUnit.SECONDS);
     }

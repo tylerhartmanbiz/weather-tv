@@ -275,7 +275,9 @@ public class MainActivity extends Activity {
             }
         }
         out.put("videos", new JSONArray());
-        out.put("error", candidates.isEmpty() ? "no video found on the page" : "no playable video found");
+        out.put("error", candidates.isEmpty()
+                ? "No video found on the page (looked after loading, after 2 clicks, and for 15 seconds)."
+                : "Found " + candidates.size() + " video link(s), but none passed the safety check.");
         return out;
     }
 

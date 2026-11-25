@@ -502,7 +502,7 @@ async function openVideo() {
   catch (e) { d = { error: 'Could not reach the video site.' }; }
   if (token !== openToken) return;
   const list = safeVideos(d);
-  if (!list.length) { loader('No playable video found for this title.', null); return; }
+  if (!list.length) { loader((d && typeof d.error === 'string' && d.error.slice(0, 200)) || 'No playable video found for this title.', null); return; }
   const item = list[0];
   opened = t;
   loader(`Loading ${item.quality || 'best'} quality…`, 0);

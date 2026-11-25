@@ -34,8 +34,9 @@ everything in `docs/` is public on GitHub Pages, because that's where the TV dow
 1. Type a title (the search opens on launch, or press **▲**). IMDb results appear as you type.
 2. Pick one: poster, rating, description, cast. TV shows get **Season / Episode** pickers
    (◀ ▶ to change, with episode names).
-3. **▶ Open**: the TV opens the site hidden, lets it load, clicks the player (a second time if
-   the first click only hit an ad or overlay), and finds the video (up to ~30 s), then loads 30 seconds of the
+3. **▶ Open**: the TV opens the site hidden, waits for it to load, clicks the middle of the
+   screen, waits 5 s, clicks again, waits 10 s, looking for the video after every step. If
+   there's still no video it shows an error. Once found, it loads 30 seconds of the
    highest-quality stream with a **% counter** before it starts. It streams; nothing is saved.
 
 Remote: ▲ search · ▼▲ move · ◀ ▶ change season/episode (or skip 10 s while watching) ·
