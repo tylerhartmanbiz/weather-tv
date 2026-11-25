@@ -20,7 +20,8 @@
     hint: '',                 // text for a bar at the bottom while the site is shown ('' = no bar)
     // After each of your clicks (short OK), also click here, this long after. null = off.
     // x / y are fractions of the screen: 0, 0 = top left, 1, 1 = bottom right.
-    followUpClick: { afterMs: 500, x: 0.03, y: 0.97, onlyFirst: false },
+    // e.g. { afterMs: 500, x: 0.03, y: 0.97, onlyFirst: false } = bottom left, 0.5 s after.
+    followUpClick: null,
     // Hide the round cursor after this long without a button press (null = always show).
     // The next arrow / OK press only brings it back, in the same place.
     hideCursorAfterMs: 5000,
