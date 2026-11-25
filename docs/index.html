@@ -159,14 +159,36 @@ function safeVideos(d) {
 //   api/fetch?url=..&post=..  JSON from IMDb (approved data hosts only)
 //   api/open?url=..           opens the video site hidden + sandboxed, returns its stream
 let cfg = null;
-async function config() {
-  // Your settings: config-noclaude.json. config.json is the example, used only if that's missing.
-  for (const name of ['config-noclaude.json', 'config.json']) {
-    if (cfg) break;
-    try { const r = await fetch(name + '?t=' + Date.now(), { cache: 'no-store' }); if (r.ok) cfg = await r.json(); } catch (e) { }
+// Lenient JSON: allows // and /* */ comments, trailing commas, curly quotes, missing { }.
+function parseSettings(text) {
+  text = text.replace(/[\u201C\u201D]/g, '"').replace(/^\uFEFF/, '');
+  let out = '', str = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i], nx = text[i + 1];
+    if (str) { out += ch; if (ch === '\\' && nx !== undefined) { out += nx; i++; } else if (ch === '"') str = false; }
+    else if (ch === '"') { str = true; out += ch; }
+    else if (ch === '/' && nx === '/') { while (i < text.length && text[i] !== '\n') i++; out += '\n'; }
+    else if (ch === '/' && nx === '*') { const e = text.indexOf('*/', i + 2); i = e < 0 ? text.length : e + 1; }
+    else out += ch;
   }
-  if (!cfg) throw new Error('no config');
-  return cfg;
+  let t = out.trim().replace(/,\s*([}\]])/g, '$1').replace(/,\s*$/, '');
+  if (!t.startsWith('{')) t = '{' + t + '}';
+  return JSON.parse(t);
+}
+async function config() {
+  // Your settings: config-noclaude.json. config.json (the example) is used only if that file
+  // doesn't exist; a mistake in it is shown, never silently replaced by the example.
+  if (cfg) return cfg;
+  const get = name => fetch(name + '?t=' + Date.now(), { cache: 'no-store' });
+  let r = await get('config-noclaude.json').catch(() => null);
+  if (!r) throw new Error('Your settings (config-noclaude.json) couldn\'t be downloaded.');
+  if (r.status === 404) r = await get('config.json');
+  else if (!r.ok) throw new Error(`Your settings (config-noclaude.json) couldn't be downloaded (HTTP ${r.status}).`);
+  let c;
+  try { c = parseSettings(await r.text()); }
+  catch (e) { throw new Error('Your settings (config-noclaude.json) have a mistake in them, so they aren\'t valid JSON.'); }
+  if (!c.openUrl && !c.openUrlTv) throw new Error('Your settings (config-noclaude.json) have no "openUrl".');
+  return cfg = c;
 }
 async function getJson(url, post) {
   const r = await fetch('api/fetch?url=' + encodeURIComponent(url) +
@@ -277,7 +299,9 @@ async function imdbEpisodes(id, season) {
 // ---------- Open: the TV opens the video site hidden + sandboxed and returns its stream ----------
 async function openStream(t, season, episode) {
   const c = await config();
-  const url = (t.isTv ? c.openUrlTv : c.openUrl)
+  const tmpl = t.isTv ? c.openUrlTv : c.openUrl;
+  if (!tmpl) throw new Error(`Your settings have no "${t.isTv ? 'openUrlTv' : 'openUrl'}" for this kind of title.`);
+  const url = tmpl
     .replace('{imdb_id}', t.id).replace('{season}', season).replace('{episode}', episode);
   const r = await fetch('api/open?url=' + encodeURIComponent(url), { cache: 'no-store' });
   return r.json();
@@ -499,7 +523,7 @@ async function openVideo() {
   show('loader');
   let d;
   try { d = await openStream(t, pick.season, pick.episode); }
-  catch (e) { d = { error: 'Could not reach the video site.' }; }
+  catch (e) { d = { error: (e && e.message) || 'Could not reach the video site.' }; }
   if (token !== openToken) return;
   const list = safeVideos(d);
   if (!list.length) { loader((d && typeof d.error === 'string' && d.error.slice(0, 200)) || 'No playable video found for this title.', null); return; }

@@ -23,9 +23,14 @@ Put your settings in `docs/config-noclaude.json`, using the same format as the e
 everything in `docs/` is public on GitHub Pages, because that's where the TV downloads it from.
 
 ```json
-"openUrl":   "https://test.com/{imdb_id}",                      // movies
-"openUrlTv": "https://test.com/{imdb_id}_{season}_{episode}",   // TV episodes
+{
+  "openUrl":   "https://test.com/{imdb_id}",
+  "openUrlTv": "https://test.com/{imdb_id}_{season}_{episode}"
+}
 ```
+
+`openUrl` is for movies, `openUrlTv` for TV episodes. Comments (`//`) and trailing commas are
+allowed. If the file has a mistake the TV shows an error (it never quietly uses the example).
 
 `{imdb_id}` becomes e.g. `tt0993846`. TV episodes become e.g. `tt0903747_1_2`.
 
@@ -61,7 +66,8 @@ The video website is treated as hostile.
   separate browser (Android's sandboxed WebView renderer) that has no access to the
   app, your files, camera, mic or location (all permission requests are denied, and the app
   only has the INTERNET permission).
-- In that browser: downloads are ignored, popups and new windows are refused,
+- In that browser: downloads are ignored, popups and new windows get an empty window that
+  loads nothing,
   alert/confirm/prompt are suppressed, the page can't leave the site or open other apps or
   app stores (if it ends up on another site anyway, it is stopped and sent back), service
   workers are blocked, and only https to public internet addresses is
@@ -73,6 +79,9 @@ The video website is treated as hostile.
 - The found stream is checked before playback: only its small text playlists are read, in
   memory, to list every host it uses. Every one must be https on a normal public hostname
   that resolves to a public address.
+- The video site sees a normal Chrome browser. Its cookies (including those of players
+  embedded from other sites) are wiped when it closes. The app fetches the checked stream
+  itself, the way the video site's player would, and hands it to its player.
 - The app you see may only connect to: this page, the pinned + integrity-checked player
   library, the IMDb/TVmaze image hosts, IMDb/TVmaze data (read as text), and exactly the
   stream hosts that check approved. Everything else is refused. No http at all.

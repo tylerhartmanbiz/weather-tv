@@ -108,6 +108,12 @@ final class Net {
 
     /** GET (or POST json) a small text resource safely. */
     static Resp fetch(String url, String postJson, String accept, int maxBytes, String sameSite) throws IOException {
+        return fetch(url, postJson, accept, maxBytes, sameSite, null);
+    }
+
+    /** Same, sending extra request headers (e.g. the video site's Referer). */
+    static Resp fetch(String url, String postJson, String accept, int maxBytes, String sameSite,
+                      Map<String, String> headers) throws IOException {
         Resp r = new Resp();
         for (int hop = 0; hop < 4; hop++) {
             String host = checkUrl(url);
@@ -122,6 +128,7 @@ final class Net {
                 c.setUseCaches(false);
                 c.setRequestProperty("Accept", accept);
                 c.setRequestProperty("Accept-Encoding", "identity");
+                if (headers != null) for (Map.Entry<String, String> h : headers.entrySet()) c.setRequestProperty(h.getKey(), h.getValue());
                 if (postJson != null) {
                     c.setDoOutput(true);
                     c.setRequestMethod("POST");
@@ -161,6 +168,36 @@ final class Net {
         throw new IOException("too many redirects");
     }
 
+    /**
+     * Open a stream request for the app's player (GET, video bytes flow straight through to
+     * the player, nothing is saved). Every hop must be https, on one of `hosts`, and resolve
+     * to public addresses. Redirects are followed by hand (max 3). Caller reads + disconnects.
+     */
+    static HttpsURLConnection openStream(String url, Map<String, String> headers, Set<String> hosts) throws IOException {
+        for (int hop = 0; hop < 4; hop++) {
+            String host = checkUrl(url);
+            if (!hosts.contains(host)) throw new IOException("host not approved");
+            if (!resolvesPublic(host)) throw new IOException("not a public internet address");
+            HttpsURLConnection c = (HttpsURLConnection) new URL(url).openConnection();
+            c.setInstanceFollowRedirects(false);
+            c.setConnectTimeout(10000);
+            c.setReadTimeout(20000);
+            c.setUseCaches(false);
+            c.setRequestProperty("Accept-Encoding", "identity");
+            for (Map.Entry<String, String> h : headers.entrySet()) c.setRequestProperty(h.getKey(), h.getValue());
+            int code = c.getResponseCode();
+            if (code == 301 || code == 302 || code == 303 || code == 307 || code == 308) {
+                String loc = c.getHeaderField("Location");
+                c.disconnect();
+                if (loc == null) throw new IOException("redirect without location");
+                url = new URL(new URL(url), loc).toString();
+                continue;
+            }
+            return c;
+        }
+        throw new IOException("too many redirects");
+    }
+
     // ---------- HLS playlists (text only; video is never downloaded) ----------
 
     private static final Pattern ATTR = Pattern.compile("([A-Z0-9-]+)=(\"[^\"]*\"|[^,]*)");
@@ -172,8 +209,8 @@ final class Net {
         String quality = "";
     }
 
-    private static Resp playlist(String url) throws IOException {
-        Resp r = fetch(url, null, "application/vnd.apple.mpegurl, */*", PLAYLIST_MAX, null);
+    private static Resp playlist(String url, Map<String, String> headers) throws IOException {
+        Resp r = fetch(url, null, "application/vnd.apple.mpegurl, */*", PLAYLIST_MAX, null, headers);
         String t = r.text.replace("﻿", "").trim();
         if (r.status != 200 || r.type.contains("html") || !t.startsWith("#EXTM3U")) throw new IOException("not an HLS playlist");
         return r;
@@ -206,8 +243,11 @@ final class Net {
         for (String u : urls) into.add(checkUrl(u));
     }
 
-    /** Check a video link without downloading video: which hosts the TV needs + quality. */
-    static Stream inspect(String src) throws IOException {
+    /**
+     * Check a video link without downloading video: which hosts the TV needs + quality.
+     * headers: what the video site's own player would send (browser identity, Referer).
+     */
+    static Stream inspect(String src, Map<String, String> headers) throws IOException {
         Stream s = new Stream();
         String path = new URL(src).getPath().toLowerCase(Locale.ROOT);
         if (path.endsWith(".mp4")) {
@@ -215,7 +255,7 @@ final class Net {
             if (!resolvesPublic(new URL(src).getHost())) throw new IOException("not public");
             return s;
         }
-        Resp m = playlist(src);
+        Resp m = playlist(src, headers);
         s.hosts.addAll(m.hosts);
         if (m.text.contains("#EXT-X-STREAM-INF")) {          // master playlist: list of qualities
             String[] lines = m.text.split("\r?\n");
@@ -239,13 +279,13 @@ final class Net {
             if (best == null) throw new IOException("playlist lists no streams");
             addHosts(s.hosts, playlistUrls(m.text, m.url));
             s.quality = bestH > 0 ? bestH + "p" : "";
-            Resp v = playlist(best);                            // the TV locks to this one
+            Resp v = playlist(best, headers);                            // the TV locks to this one
             s.hosts.addAll(v.hosts);
             addHosts(s.hosts, playlistUrls(v.text, v.url));
             for (String line : lines) {                         // its separate audio track, if any
                 if (line.startsWith("#EXT-X-MEDIA") && line.contains("TYPE=AUDIO")
                         && attr(line, "GROUP-ID").equals(audio) && !attr(line, "URI").isEmpty()) {
-                    Resp a = playlist(new URL(new URL(m.url), attr(line, "URI")).toString());
+                    Resp a = playlist(new URL(new URL(m.url), attr(line, "URI")).toString(), headers);
                     s.hosts.addAll(a.hosts);
                     addHosts(s.hosts, playlistUrls(a.text, a.url));
                     break;

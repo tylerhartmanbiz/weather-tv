@@ -49,11 +49,14 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from playwright.sync_api import sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+import settings  # noqa: E402  (reads the settings exactly like the TV)
 APP_ORIGIN = "https://tylerhartmanbiz.github.io"
 APP_PAGE = APP_ORIGIN + "/weather-tv/"
 # What the TV's hidden browser (Android WebView on a Fire TV) and its Java code look like.
-TV_UA = ("Mozilla/5.0 (Linux; Android 11; AFTKA Build/PS7633; wv) AppleWebKit/537.36 "
-         "(KHTML, like Gecko) Version/4.0 Chrome/130.0.6723.102 Mobile Safari/537.36")
+# The TV's website view now presents as plain Chrome (no "; wv" / "Version/4.0").
+TV_UA = ("Mozilla/5.0 (Linux; Android 11; AFTKA Build/PS7633) AppleWebKit/537.36 "
+         "(KHTML, like Gecko) Chrome/130.0.6723.102 Mobile Safari/537.36")
 JAVA_UA = "Dalvik/2.1.0 (Linux; U; Android 11; AFTKA Build/PS7633)"
 DESKTOP_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
@@ -199,7 +202,10 @@ def http(url, headers, method="GET", max_bytes=2_000_000):
 def headers_for(who, page_url):
     """The request headers each party sends."""
     site_origin = "https://" + urlparse(page_url).hostname
-    if who == "tv-check":      # the TV's Java safety check (Net.fetch): no Referer at all
+    if who == "tv-check":      # the TV's safety check: browser identity + the site's Referer/Origin
+        return {"User-Agent": TV_UA, "Accept": "application/vnd.apple.mpegurl, */*",
+                "Accept-Encoding": "identity", "Referer": site_origin + "/", "Origin": site_origin}
+    if who == "java":          # what the TV's check used to send (no Referer, Java identity)
         return {"User-Agent": JAVA_UA, "Accept": "application/vnd.apple.mpegurl, */*",
                 "Accept-Encoding": "identity"}
     if who == "browser":       # a normal browser, no Referer
@@ -207,9 +213,9 @@ def headers_for(who, page_url):
     if who == "site":          # the video site's own player
         return {"User-Agent": TV_UA, "Accept": "*/*", "Accept-Encoding": "identity",
                 "Referer": page_url, "Origin": site_origin}
-    if who == "app":           # hls.js in the TV app (page on github.io)
+    if who == "app":           # the TV app fetches the stream itself for its player, as the site would
         return {"User-Agent": TV_UA, "Accept": "*/*", "Accept-Encoding": "identity",
-                "Referer": APP_ORIGIN + "/", "Origin": APP_ORIGIN}
+                "Referer": site_origin + "/", "Origin": site_origin}
     raise ValueError(who)
 
 
@@ -619,6 +625,8 @@ def visit(url, ua, watch=False, video_dir=None):
 # ---------------------------------------------------------------- the report
 
 CAUSES = {
+    "CONFIG_BROKEN": "Your settings file isn't valid JSON (even allowing comments and trailing commas). "
+                     "The TV shows an error for this too. Check for a missing comma or quote.",
     "CONFIG_MISSING": "There is no openUrl / openUrlTv in your settings file for this kind of title.",
     "CONFIG_BAD_URL": "The Open link in your settings isn't a valid https address the TV accepts "
                       "(https only, normal hostname, no port, no user:password).",
@@ -696,14 +704,18 @@ def main():
             cfg_path = ROOT / "docs" / "config.json"
     is_tv = bool(a.season and a.episode)
     try:
-        cfg = json.loads(cfg_path.read_text())
+        cfg = settings.load(cfg_path)
     except Exception as e:
         cfg = {}
+        step("0. settings", False, str(e))
+        fail("CONFIG_BROKEN")
         detail(f"Could not read {cfg_path.name}: {e}")
     tmpl = cfg.get("openUrlTv" if is_tv else "openUrl", "")
     url = tmpl.replace("{imdb_id}", a.imdb_id).replace("{season}", a.season or "").replace("{episode}", a.episode or "")
     p = urlparse(url)
-    if not tmpl:
+    if cause[0]:
+        pass
+    elif not tmpl:
         step("0. settings", False, f"{cfg_path.name} has no {'openUrlTv' if is_tv else 'openUrl'}")
         fail("CONFIG_MISSING")
     elif p.scheme != "https" or not p.hostname or p.port not in (None, 443) or p.username:
@@ -862,7 +874,7 @@ def main():
                     if media and r.status in (405, 501):   # server doesn't do HEAD
                         r = http(u, {**h, "Range": "bytes=0-0"}, max_bytes=1)
                     ok_status = 200 <= r.status < 300
-                    ok_cors = is_mp4 or cors_ok(r)
+                    ok_cors = True   # the app fetches the stream itself and adds the CORS header
                     detail(f"    {name}: HTTP {r.status or r.error}  "
                            f"Access-Control-Allow-Origin={r.headers.get('access-control-allow-origin', '(none)')!r}"
                            f"  {u}")

@@ -19,10 +19,8 @@ VIDEO_EXTENSIONS = (".m3u8", ".mp4")
 
 # The "Open" button's website lives in docs/config.json (the TV reads it from there, so
 # changing it never needs a reinstall). ./helper.sh open uses the same addresses to test.
-import json as _json, pathlib as _pathlib
-_DOCS = _pathlib.Path(__file__).parent / "docs"
-_CFG_FILE = _DOCS / "config-noclaude.json"   # your settings; config.json is the example
-_CFG = _json.loads((_CFG_FILE if _CFG_FILE.exists() else _DOCS / "config.json").read_text())
+import settings as _settings   # your settings: docs/config-noclaude.json (config.json is the example)
+_CFG = _settings.load()
 OPEN_URL = _CFG["openUrl"]        # {imdb_id} becomes e.g. tt0993846
 OPEN_URL_TV = _CFG["openUrlTv"]   # + {season} and {episode}
 

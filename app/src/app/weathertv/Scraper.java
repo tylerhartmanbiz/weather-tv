@@ -7,7 +7,10 @@ import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
 import android.net.Uri;
+import android.content.pm.PackageInfo;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.Message;
 import android.os.SystemClock;
 import android.util.Log;
@@ -73,6 +76,20 @@ final class Scraper {
     private Scraper() { }
 
     static final String TAG = "VideoTV";  // see these with: ./emulator.sh logs
+
+    /** The browser identity the website sees; the safety check and player use it too. */
+    static volatile String browserUa = "";
+
+    /** "Chrome 91"-style name of this device's web engine, and its major version (0 if unknown). */
+    static int webViewMajor() {
+        try {
+            if (Build.VERSION.SDK_INT < 26) return 0;
+            PackageInfo p = WebView.getCurrentWebViewPackage();
+            return p == null ? 0 : Integer.parseInt(p.versionName.split("\\.")[0]);
+        } catch (Exception e) {
+            return 0;
+        }
+    }
 
     static void log(String what, String url) {
         Log.i(TAG, what + (url == null ? "" : ": " + (url.length() > 160 ? url.substring(0, 160) + "..." : url)));
@@ -155,7 +172,11 @@ final class Scraper {
                     Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
             bottom.bottomMargin = 30;
             root.addView(s.hint, bottom);
-            hint(s, "Start the video on the website.   Move: \u25C0 \u25B2 \u25BC \u25B6   Click: OK   Cancel: Back");
+            int engine = webViewMajor();
+            hint(s, "Start the video on the website.   Move: \u25C0 \u25B2 \u25BC \u25B6   Click: OK   Cancel: Back"
+                    + (engine > 0 && engine < 110 ? "\nThis device's web engine is old (Chrome " + engine
+                    + "), so some websites won't work. Update the device's software." : ""));
+            log("web engine: Chrome " + engine, null);
             current = s;
             log("website shown", url);
             s.web.loadUrl(url);
@@ -352,7 +373,13 @@ final class Scraper {
         s.setSaveFormData(false);
         s.setCacheMode(WebSettings.LOAD_NO_CACHE);
         if (Build.VERSION.SDK_INT >= 26) s.setSafeBrowsingEnabled(true);
-        CookieManager.getInstance().setAcceptThirdPartyCookies(w, false);
+        // Present as plain Chrome (what this engine is), not as an app's embedded browser ("; wv"),
+        // which many sites refuse. You're the one using it.
+        s.setUserAgentString(s.getUserAgentString().replace("; wv)", ")").replaceAll("Version/\\d+(\\.\\d+)* ", ""));
+        browserUa = s.getUserAgentString();
+        // Players embedded from another domain often need their own cookies. All cookies are
+        // wiped when the website closes.
+        CookieManager.getInstance().setAcceptThirdPartyCookies(w, true);
 
         w.setDownloadListener(new DownloadListener() {
             public void onDownloadStart(String u, String ua, String cd, String mime, long len) { log("BLOCKED download", u); }
@@ -432,8 +459,30 @@ final class Scraper {
         w.setWebChromeClient(new WebChromeClient() {
             @Override
             public boolean onCreateWindow(WebView v, boolean dialog, boolean gesture, Message m) {
-                log("BLOCKED popup / new window", null);
-                return false;
+                // Some sites only play after their popup "opened". Give it an empty, invisible
+                // window that can't run scripts or load anything, and throw it away shortly.
+                log("BLOCKED popup / new window (it gets an empty window that loads nothing)", null);
+                try {
+                    final WebView dummy = new WebView(v.getContext());
+                    dummy.getSettings().setJavaScriptEnabled(false);
+                    dummy.getSettings().setAllowFileAccess(false);
+                    dummy.getSettings().setAllowContentAccess(false);
+                    dummy.setWebViewClient(new WebViewClient() {
+                        @Override
+                        public boolean shouldOverrideUrlLoading(WebView d, WebResourceRequest r) { return true; }
+
+                        @Override
+                        public WebResourceResponse shouldInterceptRequest(WebView d, WebResourceRequest r) { return blocked(); }
+                    });
+                    ((WebView.WebViewTransport) m.obj).setWebView(dummy);
+                    m.sendToTarget();
+                    new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+                        public void run() { dummy.destroy(); }
+                    }, 3000);
+                    return true;
+                } catch (Exception e) {
+                    return false;
+                }
             }
 
             @Override

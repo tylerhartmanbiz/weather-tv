@@ -18,8 +18,10 @@ ROOT=$PWD
 export JAVA_HOME="/opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home"
 export PATH="$JAVA_HOME/bin:$PATH"
 export ANDROID_HOME="$ROOT/.android-sdk" ANDROID_SDK_ROOT="$ROOT/.android-sdk"
-IMAGE="system-images;android-31;android-tv;arm64-v8a"   # Android 12 TV (Fire OS 8 is based on Android 11)
-AVD=video-tv
+# Android 16 TV: its built-in web engine (WebView) is recent, like an up-to-date Fire TV's.
+# (The old Android 12 image had a 2021 engine that many websites no longer work on.)
+IMAGE="system-images;android-36;android-tv;arm64-v8a"
+AVD=video-tv-36
 APK_URL="https://github.com/tylerhartmanbiz/weather-tv/releases/latest/download/weather-tv.apk"
 ADB="$ANDROID_HOME/platform-tools/adb"
 EMU="$ANDROID_HOME/emulator/emulator"
@@ -27,7 +29,7 @@ BOOTSTRAP=/opt/homebrew/share/android-commandlinetools/cmdline-tools/latest/bin/
 
 setup() {
   [ -d "$JAVA_HOME" ] || brew install openjdk@17
-  if [ ! -x "$EMU" ] || [ ! -d "$ANDROID_HOME/system-images/android-31" ]; then
+  if [ ! -x "$EMU" ] || [ ! -d "$ANDROID_HOME/system-images/android-36/android-tv/arm64-v8a" ]; then
     [ -x "$BOOTSTRAP" ] || brew install --cask android-commandlinetools
     echo "First run: downloading the Android TV emulator (~2 GB, into .android-sdk/)..."
     yes | "$BOOTSTRAP" --sdk_root="$ANDROID_HOME" --licenses >/dev/null 2>&1 || true
@@ -42,6 +44,12 @@ setup() {
 }
 
 boot() {
+  # An older virtual TV (e.g. the Android 12 one) still running? Turn it off first.
+  if "$ADB" devices | grep -q '^emulator-' && [ "$("$ADB" emu avd name 2>/dev/null | head -1 | tr -d '\r')" != "$AVD" ]; then
+    echo "Turning off the old virtual TV..."
+    "$ADB" emu kill >/dev/null 2>&1 || true
+    while "$ADB" devices | grep -q '^emulator-'; do sleep 1; done
+  fi
   if ! "$ADB" devices | grep -q '^emulator-'; then
     echo "Starting the virtual TV (a window will open)..."
     # -no-snapshot: fresh start every time, nothing the website did is kept between runs.
@@ -49,6 +57,7 @@ boot() {
   fi
   "$ADB" wait-for-device
   until [ "$("$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; do sleep 2; done
+  echo "Web engine on the virtual TV: Chrome $("$ADB" shell dumpsys webviewupdate | sed -n 's/.*Current WebView package (name, version): ([^,]*, \([0-9.]*\)).*/\1/p' | tr -d '\r')"
 }
 
 install_apk() {  # $1 = path to apk

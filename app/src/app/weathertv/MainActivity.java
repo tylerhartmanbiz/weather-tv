@@ -22,6 +22,7 @@ import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 
 import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
@@ -34,6 +35,8 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
+
+import javax.net.ssl.HttpsURLConnection;
 
 /**
  * Thin, locked-down shell that does everything on the TV (no computer needed).
@@ -68,6 +71,10 @@ public class MainActivity extends Activity {
     private final Set<String> allowedHosts = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
     private final Set<String> dataHosts = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
     private final Set<String> openSites = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+    /** Hosts of the checked stream: the app fetches these itself, as the video site would. */
+    private final Set<String> streamHosts = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
+    private volatile Map<String, String> streamHeaders = new HashMap<String, String>();
+    private volatile String configError = null;
     private final Object scrapeLock = new Object();
 
     private FrameLayout root;
@@ -122,6 +129,9 @@ public class MainActivity extends Activity {
                 if (APP_HOST.equals(u.getHost()) && path.startsWith(API_PREFIX) && "GET".equals(r.getMethod())) {
                     return api(path.substring(API_PREFIX.length()), u);
                 }
+                if ("https".equals(u.getScheme()) && streamHosts.contains(u.getHost()) && "GET".equals(r.getMethod())) {
+                    return stream(u.toString(), r.getRequestHeaders());
+                }
                 if ("https".equals(u.getScheme()) && allowedHosts.contains(u.getHost())) return null;
                 if (!"tylerhartmanbiz.github.io".equals(u.getHost())) Scraper.log("app: blocked", u.toString());
                 return Scraper.blocked();
@@ -164,13 +174,22 @@ public class MainActivity extends Activity {
             Set<String> hosts = new HashSet<String>(BASE_HOSTS);
             Set<String> data = new HashSet<String>(DEFAULT_DATA_HOSTS);
             Set<String> sites = new HashSet<String>();
+            String error = null;
             try {
                 JSONObject cfg = config();
+                if (cfg.optString("openUrl", "").isEmpty() && cfg.optString("openUrlTv", "").isEmpty()) {
+                    throw new Exception("it has no \"openUrl\"");
+                }
                 for (String k : new String[]{"openUrl", "openUrlTv"}) {
                     String t = cfg.optString(k, "");
                     if (t.isEmpty()) continue;
-                    String host = Net.checkUrl(t.replace("{imdb_id}", "tt0000000")
-                            .replace("{season}", "1").replace("{episode}", "1"));
+                    String host;
+                    try {
+                        host = Net.checkUrl(t.replace("{imdb_id}", "tt0000000")
+                                .replace("{season}", "1").replace("{episode}", "1"));
+                    } catch (Exception e) {
+                        throw new Exception("its " + k + " isn't an https address the TV accepts");
+                    }
                     sites.add(Net.siteOf(host));
                 }
                 JSONArray d = cfg.optJSONArray("dataHosts");
@@ -178,7 +197,10 @@ public class MainActivity extends Activity {
                     String h = d.optString(i, "").toLowerCase(Locale.ROOT);
                     if (Net.isPublicHostname(h)) data.add(h);
                 }
-            } catch (Exception ignored) { }
+            } catch (Exception e) {
+                error = "Your settings (config-noclaude.json) can't be used: " + e.getMessage();
+                Scraper.log(error, null);
+            }
             try {
                 JSONArray arr = new JSONObject(appFile("videos.json")).optJSONArray("allowedHosts");
                 for (int i = 0; arr != null && i < arr.length() && i < 20; i++) {
@@ -189,6 +211,7 @@ public class MainActivity extends Activity {
             allowedHosts.clear(); allowedHosts.addAll(hosts);
             dataHosts.clear(); dataHosts.addAll(data);
             openSites.clear(); openSites.addAll(sites);
+            configError = error;
             runOnUiThread(new Runnable() { public void run() {
                 web.loadUrl(APP_URL + "?t=" + System.currentTimeMillis());
                 web.requestFocus();
@@ -196,13 +219,48 @@ public class MainActivity extends Activity {
         }}).start();
     }
 
-    /** Your settings: docs/config-noclaude.json; docs/config.json is the example/fallback. */
+    /**
+     * Your settings: docs/config-noclaude.json. docs/config.json (the example) is used only if
+     * that file doesn't exist; a mistake in it is reported, never silently replaced by the example.
+     */
     private static JSONObject config() throws Exception {
+        Net.Resp r = Net.fetch(APP_URL + "config-noclaude.json?t=" + System.currentTimeMillis(), null,
+                "application/json", 500_000, null);
+        if (r.status == 404) return parseSettings(appFile("config.json"));
+        if (r.status != 200) throw new Exception("it couldn't be downloaded (HTTP " + r.status + ")");
         try {
-            return new JSONObject(appFile("config-noclaude.json"));
+            return parseSettings(r.text);
         } catch (Exception e) {
-            return new JSONObject(appFile("config.json"));
+            throw new Exception("it has a mistake in it, so it isn't valid JSON");
         }
+    }
+
+    /** Lenient JSON: allows // and /* *\/ comments, trailing commas, curly quotes, missing { }. */
+    static JSONObject parseSettings(String text) throws Exception {
+        text = text.replace('\u201C', '"').replace('\u201D', '"').replace("\uFEFF", "");
+        StringBuilder out = new StringBuilder();
+        boolean str = false;
+        for (int i = 0; i < text.length(); i++) {
+            char ch = text.charAt(i), nx = i + 1 < text.length() ? text.charAt(i + 1) : 0;
+            if (str) {
+                out.append(ch);
+                if (ch == '\\' && nx != 0) { out.append(nx); i++; } else if (ch == '"') str = false;
+            } else if (ch == '"') {
+                str = true;
+                out.append(ch);
+            } else if (ch == '/' && nx == '/') {
+                while (i < text.length() && text.charAt(i) != '\n') i++;
+                out.append('\n');
+            } else if (ch == '/' && nx == '*') {
+                int end = text.indexOf("*/", i + 2);
+                i = end < 0 ? text.length() : end + 1;
+            } else {
+                out.append(ch);
+            }
+        }
+        String t = out.toString().trim().replaceAll(",\\s*([}\\]])", "$1").replaceAll(",\\s*$", "");
+        if (!t.startsWith("{")) t = "{" + t + "}";
+        return new JSONObject(t);
     }
 
     private static String appFile(String name) throws Exception {
@@ -251,9 +309,12 @@ public class MainActivity extends Activity {
      * asks for that passes the safety check closes it and is returned to the page to play.
      */
     private JSONObject open(String url) throws Exception {
-        String host = Net.checkUrl(url == null ? "" : url);
+        if (configError != null) throw new Exception(configError);
+        final String host = Net.checkUrl(url == null ? "" : url);
         String site = Net.siteOf(host);
-        if (!openSites.contains(site)) throw new Exception("site not in config.json");
+        if (!openSites.contains(site)) {
+            throw new Exception("That website isn't the one in your settings. Press Menu \u2630 to reload them.");
+        }
         final JSONObject out = new JSONObject();
         final int[] tried = {0};
         String result;
@@ -262,8 +323,15 @@ public class MainActivity extends Activity {
                 public boolean accept(String src) {
                     if (++tried[0] > 20) return false;
                     try {
-                        Net.Stream s = Net.inspect(src);
-                        allowedHosts.addAll(s.hosts); // the player may now stream from exactly these hosts
+                        // Ask for the stream the way the video site's own player does.
+                        Map<String, String> h = new HashMap<String, String>();
+                        if (!Scraper.browserUa.isEmpty()) h.put("User-Agent", Scraper.browserUa);
+                        h.put("Referer", "https://" + host + "/");
+                        h.put("Origin", "https://" + host);
+                        Net.Stream s = Net.inspect(src, h);
+                        streamHeaders = h;
+                        streamHosts.clear();
+                        streamHosts.addAll(s.hosts); // the player may now stream from exactly these hosts
                         Scraper.log("PLAYING " + (s.quality.isEmpty() ? "" : s.quality + " ") + "from hosts " + s.hosts, src);
                         JSONObject v = new JSONObject();
                         v.put("src", src);
@@ -285,6 +353,40 @@ public class MainActivity extends Activity {
                 : tried[0] > 0 ? "The website's video couldn't be played safely."
                 : "No video was started on the website.");
         return out;
+    }
+
+    /**
+     * The player's request for the checked stream: fetched here with the video site's headers
+     * (Referer etc.), so stream servers that only serve the site itself still work, and handed
+     * to the player as it arrives (nothing is saved). Only the checked stream hosts, https,
+     * public addresses; redirects checked hop by hop.
+     */
+    private WebResourceResponse stream(String url, Map<String, String> req) {
+        try {
+            Map<String, String> h = new HashMap<String, String>(streamHeaders);
+            for (Map.Entry<String, String> e : req.entrySet()) {
+                if ("range".equalsIgnoreCase(e.getKey())) h.put("Range", e.getValue());
+            }
+            HttpsURLConnection c = Net.openStream(url, h, streamHosts);
+            int code = c.getResponseCode();
+            String type = c.getContentType() == null ? "application/octet-stream" : c.getContentType().split(";")[0].trim();
+            Map<String, String> out = new HashMap<String, String>();
+            out.put("Access-Control-Allow-Origin", "*");
+            out.put("Cache-Control", "no-store");
+            for (String k : new String[]{"Content-Range", "Content-Length", "Accept-Ranges"}) {
+                String v = c.getHeaderField(k);
+                if (v != null) out.put(k, v);
+            }
+            InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
+            if (in == null) in = new ByteArrayInputStream(new byte[0]);
+            if (code < 200 || code > 599 || (code >= 300 && code < 400)) code = 502;
+            if (code >= 400) Scraper.log("stream server answered HTTP " + code, url);
+            String msg = c.getResponseMessage();
+            return new WebResourceResponse(type, null, code, msg == null || msg.isEmpty() ? "OK" : msg, out, in);
+        } catch (Exception e) {
+            Scraper.log("stream request refused (" + e.getMessage() + ")", url);
+            return Scraper.blocked();
+        }
     }
 
     // ---------- remote ----------
