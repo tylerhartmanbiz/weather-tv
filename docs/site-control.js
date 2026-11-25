@@ -11,8 +11,9 @@
 
   // ---------- settings: change these freely ----------
   const S = {
-    autoClick: true,          // click the middle of the screen as soon as the page shows
-    autoHoldAfterMs: 150,     // then put the finger down there (hold mode); null = don't
+    autoClick: false,         // click the middle of the screen as soon as the page shows
+    autoHold: false,          // put the finger down in the middle as soon as the page shows (hold mode)
+    autoHoldAfterMs: 150,     // ...this long after the page shows (after the click, if autoClick)
     holdToGrabMs: 800,        // hold OK this long to grab (start dragging)
     moveStep: repeat => 14 + Math.min(repeat * 8, 60),   // pixels per arrow press (faster when held)
     dragStep: repeat => 8 + Math.min(repeat * 4, 40),    // same, while holding (finer)
@@ -42,11 +43,11 @@
   }
 
   function onVisible() {         // the website's page just appeared
-    if (!S.autoClick || autoDone) return;
+    if ((!S.autoClick && !S.autoHold) || autoDone) return;
     autoDone = true;
     cmd('center');
-    cmd('tap');
-    if (S.autoHoldAfterMs != null) setTimeout(() => cmd('down'), S.autoHoldAfterMs);
+    if (S.autoClick) cmd('tap');
+    if (S.autoHold) setTimeout(() => cmd('down'), S.autoHoldAfterMs);
   }
 
   function onKey(k) {
