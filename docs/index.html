@@ -47,7 +47,23 @@ function play(i) {
   if (item.thumbnail) video.poster = item.thumbnail;
   if (hls) { hls.destroy(); hls = null; }
   if (window.Hls && Hls.isSupported()) {
-    hls = new Hls();
+    // Always use the best quality: lock to the highest-resolution/bitrate stream the TV
+    // can decode (no adaptive drop-down), and buffer more ahead to avoid stalls.
+    hls = new Hls({
+      capLevelToPlayerSize: false,
+      startLevel: -1,
+      abrEwmaDefaultEstimate: 50_000_000,
+      maxBufferLength: 60,
+      maxMaxBufferLength: 120,
+    });
+    hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
+      let best = 0;
+      data.levels.forEach((l, i) => {
+        const b = data.levels[best];
+        if (l.height > b.height || (l.height === b.height && l.bitrate > b.bitrate)) best = i;
+      });
+      hls.currentLevel = best; // fixed level = auto quality switching off
+    });
     hls.loadSource(item.src);
     hls.attachMedia(video);
   } else {
