@@ -41,7 +41,10 @@ allowed. If the file has a mistake the TV shows an error (it never quietly uses 
    (◀ ▶ to change, with episode names).
 3. **▶ Open**: the TV shows the video website (in a sandbox, see Safety). Use it like a
    browser: **◀ ▲ ▼ ▶** move the round cursor (hold to go faster; push past the top or bottom
-   edge to scroll), **OK** clicks, **Back** cancels. Nothing is clicked for you. As soon as you
+   edge to scroll), **OK** clicks, **Back** cancels. To drag (e.g. a slider puzzle): hold **OK**
+   ~1 s (or press Play/Pause) to grab, the cursor turns blue, arrows drag, **OK** lets go.
+   When the page has loaded, the TV clicks the middle once for you and then starts *holding*
+   there, so the arrows drag right away; press **OK** to let go. As soon as you
    start the video there, the website closes and the app loads 30 seconds of the
    highest-quality stream with a **% counter** before it starts. It streams; nothing is saved.
 

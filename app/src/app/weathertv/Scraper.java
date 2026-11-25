@@ -168,6 +168,7 @@ final class Scraper {
         boolean dragging;          // holding the "finger" down (drag mode)
         long dragDownTime;
         boolean okStartedDrag;     // this OK press began the drag (its release keeps holding)
+        boolean autoStarted;       // the automatic first click + hold has been done
     }
 
     /** A video link the website asked for: remember it (and its headers) for the checker. */
@@ -331,6 +332,23 @@ final class Scraper {
             default:
                 return true;   // nothing else reaches the app while the website is shown
         }
+    }
+
+    /**
+     * Right after the video page loads: one click in the middle of the screen (so you don't
+     * have to), then the "finger" goes down there and stays down, so the arrows drag right
+     * away (e.g. a slider puzzle). OK lets go; after that everything works as usual.
+     */
+    private static void autoStart(final Session s) {
+        if (s.web == null || s.ended != null || current != s || s.dragging) return;
+        final CursorView c = s.cursor;
+        c.moveTo(c.getWidth() / 2f, c.getHeight() / 2f);
+        log("automatic first click in the middle", null);
+        if (Methods.on(Methods.MOUSE)) mouseClick(s.web, c.x, c.y); else tap(s.web, c.x, c.y);
+        c.postDelayed(new Runnable() { public void run() {
+            if (s.web == null || s.ended != null || current != s || s.dragging) return;
+            startDrag(s);
+        }}, 400);
     }
 
     /** Put the "finger" down at the cursor and keep it there (drag mode). */
@@ -706,6 +724,12 @@ final class Scraper {
             public void onPageFinished(WebView v, String u) {
                 if (sniff && u != null && !u.startsWith("about:")) v.evaluateJavascript(SNIFF_JS, null);
                 if (testing) log("page finished loading", u);
+                // Once the video page has loaded: click the middle for you, then hold (see autoStart).
+                if (u != null && !u.startsWith("about:") && !session.autoStarted
+                        && (!Methods.on(Methods.HOME_FIRST) || u.equals(startUrl))) {
+                    session.autoStarted = true;
+                    v.postDelayed(new Runnable() { public void run() { autoStart(session); } }, 1500);
+                }
             }
 
             @Override
