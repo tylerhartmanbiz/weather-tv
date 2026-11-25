@@ -209,16 +209,7 @@ final class Scraper {
             s.cursor = new CursorView(act);
             root.addView(s.cursor, new FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
-            s.hint = new TextView(act);
-            s.hint.setTextColor(Color.WHITE);
-            s.hint.setTextSize(17);
-            s.hint.setBackgroundColor(0xCC000000);
-            s.hint.setPadding(30, 14, 30, 14);
-            FrameLayout.LayoutParams bottom = new FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
-                    Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-            bottom.bottomMargin = 30;
-            root.addView(s.hint, bottom);
+            // No help bar over the website (it covered the page); s.hint stays null.
             int engine = webViewMajor();
             hint(s, MAIN_HINT
                     + (engine > 0 && engine < 110 ? "\nThis device's web engine is old (Chrome " + engine
@@ -265,7 +256,7 @@ final class Scraper {
         act.runOnUiThread(new Runnable() { public void run() {
             if (current == s) current = null;
             root.removeView(s.cursor);
-            root.removeView(s.hint);
+            if (s.hint != null) root.removeView(s.hint);
             destroy(root, s.web, !"crashed".equals(s.ended));
             s.web = null;
             gone.countDown();
@@ -348,7 +339,7 @@ final class Scraper {
         c.postDelayed(new Runnable() { public void run() {
             if (s.web == null || s.ended != null || current != s || s.dragging) return;
             startDrag(s);
-        }}, 400);
+        }}, 150);
     }
 
     /** Put the "finger" down at the cursor and keep it there (drag mode). */
@@ -724,11 +715,20 @@ final class Scraper {
             public void onPageFinished(WebView v, String u) {
                 if (sniff && u != null && !u.startsWith("about:")) v.evaluateJavascript(SNIFF_JS, null);
                 if (testing) log("page finished loading", u);
-                // Once the video page has loaded: click the middle for you, then hold (see autoStart).
+                maybeAutoStart(v, u);   // fallback if the page never reported being visible
+            }
+
+            @Override
+            public void onPageCommitVisible(WebView v, String u) {
+                maybeAutoStart(v, u);   // the moment the page first shows
+            }
+
+            /** As soon as the video page shows: click the middle for you, then hold (autoStart). */
+            private void maybeAutoStart(WebView v, String u) {
                 if (u != null && !u.startsWith("about:") && !session.autoStarted
                         && (!Methods.on(Methods.HOME_FIRST) || u.equals(startUrl))) {
                     session.autoStarted = true;
-                    v.postDelayed(new Runnable() { public void run() { autoStart(session); } }, 1500);
+                    v.post(new Runnable() { public void run() { autoStart(session); } });
                 }
             }
 
