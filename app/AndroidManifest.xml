@@ -1,14 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="app.weathertv" android:versionCode="2" android:versionName="1.1">
-    <!-- INTERNET is the only permission: no storage, no install-packages, nothing else. -->
+    package="app.weathertv" android:versionCode="3" android:versionName="1.2">
+    <!-- INTERNET is the only permission: no storage, no install-packages, nothing else.
+         Cleartext is only used by the app's own code to reach the search server on your
+         home network; the WebView itself is https-only (enforced in MainActivity). -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-sdk android:minSdkVersion="22" android:targetSdkVersion="30" />
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <application android:label="@string/app_name" android:icon="@drawable/icon"
         android:banner="@drawable/banner" android:allowBackup="false"
-        android:usesCleartextTraffic="false"
+        android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
         <meta-data android:name="android.webkit.WebView.EnableSafeBrowsing" android:value="true" />
         <activity android:name=".MainActivity" android:exported="true" android:screenOrientation="landscape">

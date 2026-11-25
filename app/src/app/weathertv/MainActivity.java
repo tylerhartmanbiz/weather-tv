@@ -17,6 +17,8 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 
 import java.io.ByteArrayInputStream;
+import java.util.HashMap;
+import java.util.Map;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
@@ -47,6 +49,11 @@ public class MainActivity extends Activity {
             "tylerhartmanbiz.github.io", // the app page + videos.json
             "cdn.jsdelivr.net"));        // pinned hls.js player (integrity-checked)
     private static final String HOST_RE = "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$";
+    // Search server on your computer (from docs/config.json). Only private LAN addresses accepted.
+    private static final String LAN_RE =
+            "^http://(10\\.\\d+|192\\.168|172\\.(1[6-9]|2\\d|3[01]))\\.\\d+\\.\\d+:\\d{2,5}$";
+    private static final String API_PREFIX = "/weather-tv/api/";
+    private volatile String searchServer = null;
     private final Set<String> allowedHosts = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
 
     private WebView web;
@@ -87,6 +94,10 @@ public class MainActivity extends Activity {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest r) {
                 Uri u = r.getUrl();
+                if ("tylerhartmanbiz.github.io".equals(u.getHost()) && u.getPath() != null
+                        && u.getPath().startsWith(API_PREFIX) && "GET".equals(r.getMethod())) {
+                    return proxyToSearchServer(u);
+                }
                 if ("https".equals(u.getScheme()) && allowedHosts.contains(u.getHost())) return null;
                 return new WebResourceResponse("text/plain", "utf-8", 403, "Blocked", null,
                         new ByteArrayInputStream(new byte[0]));
@@ -123,6 +134,8 @@ public class MainActivity extends Activity {
     private void reload() {
         new Thread(new Runnable() { public void run() {
             Set<String> hosts = fetchAllowedHosts();
+            String server = fetchSearchServer();
+            searchServer = server;
             allowedHosts.clear();
             allowedHosts.addAll(BASE_HOSTS);
             allowedHosts.addAll(hosts);
@@ -133,28 +146,71 @@ public class MainActivity extends Activity {
         }}).start();
     }
 
-    private static Set<String> fetchAllowedHosts() {
-        Set<String> out = new HashSet<String>();
+    private static String get(String url, int timeoutMs) {
         try {
-            HttpURLConnection c = (HttpURLConnection) new URL(APP_URL + "videos.json?t=" + System.currentTimeMillis()).openConnection();
+            HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
             c.setConnectTimeout(8000);
-            c.setReadTimeout(8000);
+            c.setReadTimeout(timeoutMs);
             c.setUseCaches(false);
             c.setInstanceFollowRedirects(false);
-            if (c.getResponseCode() != 200) return out;
+            if (c.getResponseCode() != 200) return null;
             InputStream in = c.getInputStream();
             ByteArrayOutputStream buf = new ByteArrayOutputStream();
             byte[] b = new byte[8192];
             int n;
             while ((n = in.read(b)) > 0 && buf.size() < 2_000_000) buf.write(b, 0, n);
             in.close();
-            JSONArray arr = new JSONObject(buf.toString("UTF-8")).optJSONArray("allowedHosts");
+            return buf.toString("UTF-8");
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static Set<String> hostsFrom(String json) {
+        Set<String> out = new HashSet<String>();
+        try {
+            JSONArray arr = new JSONObject(json).optJSONArray("allowedHosts");
             for (int i = 0; arr != null && i < arr.length() && i < 20; i++) {
                 String h = arr.optString(i, "").toLowerCase();
                 if (h.matches(HOST_RE)) out.add(h);
             }
         } catch (Exception ignored) { }
         return out;
+    }
+
+    private static Set<String> fetchAllowedHosts() {
+        String s = get(APP_URL + "videos.json?t=" + System.currentTimeMillis(), 8000);
+        return s == null ? new HashSet<String>() : hostsFrom(s);
+    }
+
+    private static String fetchSearchServer() {
+        try {
+            String s = get(APP_URL + "config.json?t=" + System.currentTimeMillis(), 8000);
+            String addr = s == null ? "" : new JSONObject(s).optString("searchServer", "");
+            return addr.matches(LAN_RE) ? addr : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Forward /api/... to the search server on your computer; allow the hosts it returns. */
+    private WebResourceResponse proxyToSearchServer(Uri u) {
+        String server = searchServer;
+        String body = null;
+        if (server != null) {
+            String q = u.getEncodedQuery();
+            body = get(server + "/api/" + u.getPath().substring(API_PREFIX.length()) + (q == null ? "" : "?" + q), 90000);
+        }
+        if (body == null) body = "{\"videos\":[],\"error\":\"search server unreachable\"}";
+        else allowedHosts.addAll(hostsFrom(body));
+        Map<String, String> h = new HashMap<String, String>();
+        h.put("Cache-Control", "no-store");
+        try {
+            return new WebResourceResponse("application/json", "utf-8", 200, "OK", h,
+                    new ByteArrayInputStream(body.getBytes("UTF-8")));
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     @Override
@@ -164,7 +220,13 @@ public class MainActivity extends Activity {
     }
 
     @Override
-    public void onBackPressed() { finish(); }
+    public void onBackPressed() {
+        // Back closes the search box if it's open, otherwise exits the app.
+        web.evaluateJavascript("(function(){try{return window.onTvBack&&window.onTvBack()?'1':'0'}catch(e){return '0'}})()",
+                new android.webkit.ValueCallback<String>() {
+                    public void onReceiveValue(String r) { if (!"\"1\"".equals(r)) finish(); }
+                });
+    }
 
     @Override
     protected void onDestroy() {

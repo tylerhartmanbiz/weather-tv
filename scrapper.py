@@ -1,25 +1,33 @@
 #!/usr/bin/env python3
-"""Scrape videos from a website and write them to docs/videos.json for the TV app.
+"""Scrape videos from a website for the TV app (default list + search).
 
 ======================  TO CHANGE THE WEBSITE, EDIT THIS SECTION ONLY  ======================
 """
-# The page to scrape. The first video found is the one the TV plays first.
-SOURCE = "https://weather.com/"
+# The website. Its videos are the TV's default list (./helper.sh scrape), and
+# ./helper.sh record starts here. The first video found is the one the TV plays first.
+SOURCE = "https://example.com/"   # <-- put your website here
 
 # Hosts the TV is allowed to stream video/thumbnails from. Leave empty to allow only the
-# hosts the videos were actually found on (https only). Fill it in to be stricter, e.g.
-# VIDEO_HOSTS = {"v.w-x.co"} ; IMAGE_HOSTS = {"s.w-x.co"}
-VIDEO_HOSTS = {"v.w-x.co"}
-IMAGE_HOSTS = {"s.w-x.co"}
+# hosts the videos were actually found on (https only). Fill in to be stricter, e.g.
+# VIDEO_HOSTS = {"video.example-cdn.com"} ; IMAGE_HOSTS = {"img.example-cdn.com"}
+VIDEO_HOSTS = set()
+IMAGE_HOSTS = set()
 
 # Only direct video files work (HLS .m3u8 or .mp4). Pages that only embed YouTube/other
 # players in an iframe are not supported, on purpose: that would load the other site.
 VIDEO_EXTENSIONS = (".m3u8", ".mp4")
+
+# How to SEARCH the site (used when someone searches on the TV). Don't write this by hand:
+# run ./helper.sh record, do one search in the browser, and it fills this in for you.
+# {query} is replaced by whatever the person searches for. You can still edit it.
+# >>> RECIPE (written by record.py) >>>
+RECIPE = None
+# <<< END RECIPE <<<
 # ==========================================================================================
 """
 How videos are found (in order, first one that finds anything wins):
   1. schema.org VideoObject data (<script type="application/ld+json">) - most news sites
-  2. "contentUrl" entries inside the page's embedded JSON (Next.js sites like weather.com)
+  2. "contentUrl" entries inside the page's embedded JSON (e.g. Next.js sites)
   3. og:video meta tags
   4. any https link to a .m3u8/.mp4 file in the page
 
@@ -168,6 +176,63 @@ def from_raw_links(html):
 STRATEGIES = [from_json_ld, from_embedded_json, from_og_tags, from_raw_links]
 
 
+# ---------- search (replays the recorded RECIPE in the locked-down browser) ----------
+
+def search(query, recipe=None):
+    """Run the recorded search for `query` and return the videos found (best first)."""
+    from urllib.parse import quote, quote_plus
+    from safe_browser import SafeBrowser
+    recipe = recipe or RECIPE
+    if not recipe:
+        raise RuntimeError("no RECIPE yet: run ./helper.sh record first")
+    query = re.sub(r"[\x00-\x1f]", "", query).strip()[:100]
+    with SafeBrowser(recipe["start"]) as b:
+        page = b.page
+        mark = 0
+        for step in recipe["steps"]:
+            mark = len(b.videos)  # videos from the final step are the ones we want
+            a, sel = step["action"], step.get("selector")
+            if a == "goto":
+                enc = {"plus": quote_plus, "percent": quote}.get(step.get("encode"), lambda x: x)
+                page.goto(step["url"].replace("{query}", enc(query)), wait_until="domcontentloaded", timeout=30000)
+            elif a == "fill":
+                page.locator(sel).first.fill(step["value"].replace("{query}", query), timeout=10000)
+            elif a == "press":
+                (page.locator(sel).first.press if sel else page.keyboard.press)(step["key"], timeout=10000)
+            elif a == "click":
+                page.locator(sel).first.click(timeout=10000)
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=10000)
+            except Exception:
+                pass
+            page.wait_for_timeout(700)
+        for _ in range(60):  # wait up to ~15s for the video to show up
+            if len(b.videos) > mark:
+                break
+            page.wait_for_timeout(250)
+        info = b.page_info()
+        html = page.content()
+        urls = b.videos[mark:] or b.videos
+        hosts = set(recipe.get("video_hosts") or [])
+        urls = [u for u in urls if urlparse(u).hostname in hosts] or urls  # skip ad videos
+        urls += [u for u in b.dom_videos() if u not in urls]
+    found = [video(info["title"], info["description"], info["thumbnail"], u) for u in urls]
+    for strategy in STRATEGIES[:3]:  # also pick up any listed on the final page
+        found += strategy(html)
+    out, seen = [], set()
+    for v in found:
+        if v["src"].startswith("https://") and v["src"] not in seen:
+            seen.add(v["src"])
+            thumb = v["thumbnail"] if (v["thumbnail"] or "").startswith("https://") else ""
+            out.append(video(clean_text(v["title"], 200), clean_text(v["description"], 500), thumb, v["src"]))
+    return out[:20]
+
+
+def allowed_hosts(videos):
+    return sorted({urlparse(v["src"]).hostname for v in videos} |
+                  {urlparse(v["thumbnail"]).hostname for v in videos if v["thumbnail"]})
+
+
 # ---------- main ----------
 
 def scrape():
@@ -192,12 +257,14 @@ def scrape():
 
 
 def main():
+    if len(sys.argv) > 2 and sys.argv[1] == "--search":
+        print(json.dumps(search(" ".join(sys.argv[2:])), indent=2, ensure_ascii=False))
+        return
     out = sys.argv[1] if len(sys.argv) > 1 else "docs/videos.json"
     videos, how = scrape()
     if not videos:
         sys.exit("no videos found; leaving existing file untouched")
-    hosts = sorted({urlparse(v["src"]).hostname for v in videos} |
-                   {urlparse(v["thumbnail"]).hostname for v in videos if v["thumbnail"]})
+    hosts = allowed_hosts(videos)
     data = {"source": SOURCE, "updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "allowedHosts": hosts, "videos": videos}
     with open(out, "w", encoding="utf-8") as f:

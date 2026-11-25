@@ -6,7 +6,7 @@
 <!-- No frames, no forms, no plugins, https only. The TV app additionally only lets the
      hosts listed in videos.json (written by scrapper.py) connect at all. -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; connect-src 'self' https:; media-src https: blob:; img-src https:; worker-src blob:; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'">
-<title>Weather TV</title>
+<title>Video TV</title>
 <style>
   html, body { margin: 0; height: 100%; background: #000; color: #fff; font-family: system-ui, sans-serif; overflow: hidden; }
   video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
@@ -16,11 +16,19 @@
   #title { font-size: 34px; font-weight: 700; margin: 0 0 8px; }
   #desc { font-size: 20px; opacity: .85; margin: 0 0 12px; max-width: 70ch; }
   #meta { font-size: 16px; opacity: .6; }
+  #search { position: fixed; top: 24px; left: 50%; transform: translateX(-50%); display: flex; gap: 12px;
+            align-items: center; background: rgba(0,0,0,.7); padding: 10px 18px; border-radius: 40px;
+            transition: opacity .4s; font-size: 20px; }
+  #search.hide { opacity: 0; }
+  #q { font-size: 24px; width: 520px; padding: 10px 18px; border-radius: 30px; border: 2px solid #555;
+       background: #111; color: #fff; outline: none; }
+  #q:focus { border-color: #4da3ff; }
   #msg { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 24px; }
 </style>
 </head>
 <body>
 <video id="v" autoplay playsinline></video>
+<div id="search" class="hide"><span>🔍</span><input id="q" type="search" placeholder="Search videos… (▲ on remote)" maxlength="100" autocomplete="off"></div>
 <div id="msg">Loading…</div>
 <div id="info" class="hide"><p id="title"></p><p id="desc"></p><div id="meta"></div></div>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.7.4/dist/hls.min.js"
@@ -36,7 +44,52 @@ document.addEventListener('click', e => { if (e.target.closest('a')) e.preventDe
 const video = document.getElementById('v');
 const info = document.getElementById('info');
 const msg = document.getElementById('msg');
-let videos = [], index = 0, hls = null, hideTimer = null;
+let videos = [], index = 0, hls = null, hideTimer = null, searchTimer = null;
+const searchBox = document.getElementById('search');
+const q = document.getElementById('q');
+
+function showSearch(focus) {
+  searchBox.classList.remove('hide');
+  clearTimeout(searchTimer);
+  if (focus) q.focus();
+  else searchTimer = setTimeout(() => { if (document.activeElement !== q) searchBox.classList.add('hide'); }, 6000);
+}
+function closeSearch() { q.blur(); searchBox.classList.add('hide'); }
+// Called by the TV app when Back is pressed: close the search box instead of exiting.
+window.onTvBack = () => { if (document.activeElement === q) { closeSearch(); return true; } return false; };
+
+function setVideos(d, label) {
+  const allowed = new Set(d.allowedHosts || []);
+  const list = (d.videos || []).filter(v => {
+    try { const u = new URL(v.src); return u.protocol === 'https:' && allowed.has(u.hostname); }
+    catch (e) { return false; }
+  });
+  if (!list.length) return false;
+  videos = list;
+  play(0);
+  return true;
+}
+
+function runSearch(text) {
+  text = text.trim();
+  if (!text) return;
+  closeSearch();
+  msg.style.display = 'flex';
+  msg.textContent = `Searching for "${text}"… (can take ~20 seconds)`;
+  fetch('api/search?q=' + encodeURIComponent(text), { cache: 'no-store' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error && d.error.includes('server')) throw new Error(d.error);
+      if (!setVideos(d)) { msg.textContent = `No videos found for "${text}".`; setTimeout(() => { if (!video.paused) msg.style.display = 'none'; }, 4000); }
+    })
+    .catch(() => { msg.textContent = 'Search unavailable: start ./helper.sh serve on your computer.'; });
+}
+
+q.addEventListener('keydown', e => {
+  e.stopPropagation();
+  if (e.key === 'Enter') { e.preventDefault(); runSearch(q.value); }
+  else if (e.key === 'Escape') closeSearch();
+});
 
 function showInfo() {
   info.classList.remove('hide');
@@ -50,7 +103,7 @@ function play(i) {
   document.getElementById('title').textContent = item.title;
   document.getElementById('desc').textContent = item.description;
   document.getElementById('meta').textContent =
-    `${index + 1} / ${videos.length}  ·  ◀ ▶ change video  ·  OK pause/play`;
+    `${index + 1} / ${videos.length}  ·  ◀ ▶ change video  ·  OK pause/play  ·  ▲ search`;
   if (item.thumbnail) video.poster = item.thumbnail;
   if (hls) { hls.destroy(); hls = null; }
   const isHls = /\.m3u8(\?|$)/i.test(new URL(item.src).pathname + new URL(item.src).search);
@@ -81,31 +134,24 @@ function play(i) {
   showInfo();
 }
 
+
 video.addEventListener('playing', () => { msg.style.display = 'none'; });
 video.addEventListener('ended', () => play(index + 1));
 
 document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowUp') { showSearch(true); e.preventDefault(); return; }
   if (!videos.length) return;
   if (e.key === 'ArrowRight') play(index + 1);
   else if (e.key === 'ArrowLeft') play(index - 1);
   else if (e.key === 'Enter' || e.key === ' ' || e.key === 'MediaPlayPause') video.paused ? video.play() : video.pause();
-  else { showInfo(); return; }
+  else { showInfo(); showSearch(false); return; }
   e.preventDefault();
 });
 
 fetch('videos.json?t=' + Date.now(), { cache: 'no-store' })
   .then(r => r.json())
-  .then(d => {
-    // Only accept https video URLs on the hosts the scraper allowed.
-    const allowed = new Set(d.allowedHosts || []);
-    videos = (d.videos || []).filter(v => {
-      try { const u = new URL(v.src); return u.protocol === 'https:' && allowed.has(u.hostname); }
-      catch (e) { return false; }
-    });
-    if (!videos.length) throw new Error('no videos');
-    play(0);
-  })
-  .catch(() => { msg.textContent = 'Could not load videos.'; });
+  .then(d => { if (!setVideos(d)) throw new Error('no videos'); showSearch(false); })
+  .catch(() => { msg.textContent = 'Press ▲ on the remote to search.'; showSearch(true); });
 </script>
 </body>
 </html>
