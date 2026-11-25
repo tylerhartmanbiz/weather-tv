@@ -1,0 +1,5 @@
+{
+  "openUrl": "https://vidsrc.sh/embed/movie?imdb={imdb_id}",
+  "openUrlTv":  "https://vidsrc.sh/embed/tv?imdb={imdb_id}&season={season}&episode={episode}",
+  "dataHosts": ["v3.sg.media-imdb.com", "caching.graphql.imdb.com", "api.tvmaze.com"]
+}
