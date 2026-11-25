@@ -53,6 +53,7 @@
   #epick { display: flex; flex-direction: column; align-items: flex-start; gap: .8rem; margin-bottom: 1.2rem; }
   #qrnote { position: absolute; inset: 0; background: #000; color: #fff; display: flex; align-items: center;
             justify-content: center; text-align: center; padding: 0 6vw; font-size: 7vw; font-weight: 800; line-height: 1.2; }
+  #qrnote small { display: block; margin-top: 3vw; font-size: 3vw; font-weight: 600; }
   .sel { display: flex; align-items: center; gap: .6rem; background: #161a20; border: 3px solid #2a313b;
          border-radius: .7rem; padding: .5rem 1rem; outline: none; font-size: 1.15rem; min-width: 9rem; }
   .sel:focus { border-color: #f5c518; }
@@ -114,7 +115,7 @@
   <div id="lpct"></div>
   <div id="lbar"><div id="lfill"></div></div>
   <div id="lhint">Back to cancel</div>
-  <div id="qrnote" class="hide">Don't scan the QR Code</div>
+  <div id="qrnote" class="hide"><div>Don't scan the QR Code<small>Press the X on top right after 30 seconds</small></div></div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.7.4/dist/hls.min.js"

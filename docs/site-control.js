@@ -18,13 +18,19 @@
     moveStep: repeat => 14 + Math.min(repeat * 8, 60),   // pixels per arrow press (faster when held)
     dragStep: repeat => 8 + Math.min(repeat * 4, 40),    // same, while holding (finer)
     hint: '',                 // text for a bar at the bottom while the site is shown ('' = no bar)
+    // After each of your clicks (short OK), also click here, this long after. null = off.
+    // x / y are fractions of the screen: 0, 0 = top left, 1, 1 = bottom right.
+    followUpClick: { afterMs: 500, x: 0.03, y: 0.97, onlyFirst: false },
   };
 
   // ---------- talking to the app ----------
   let chain = Promise.resolve();
   let state = {};               // {open, w, h, x, y, dragging, density} from the app
   // Commands run one after another, in order (so a "down" never overtakes a "move").
+  let holding = false;          // finger down? (known right away, not only after the app answers)
   function cmd(op, params) {
+    if (op === 'down') holding = true;
+    else if (op === 'up' || op === 'close') holding = false;
     const q = Object.entries(params || {}).map(([k, v]) => '&' + k + '=' + encodeURIComponent(v)).join('');
     chain = chain.then(() => fetch('api/site?op=' + op + q, { cache: 'no-store' })
       .then(r => r.json()).then(s => { state = s; return s; }).catch(() => state));
@@ -34,10 +40,25 @@
   // ---------- behaviour ----------
   let autoDone = false;
   let okStartedDrag = false;   // this OK press began the drag (its release keeps holding)
+  let followUps = 0;
+
+  // Your click, then (if set) the extra click near the bottom left.
+  function userClick() {
+    cmd('tap');
+    const f = S.followUpClick;
+    if (!f || (f.onlyFirst && followUps > 0)) return;
+    followUps++;
+    setTimeout(() => {
+      if (!state.open || !state.w) return;
+      cmd('tap', { x: Math.round(state.w * f.x), y: Math.round(state.h * f.y) });
+    }, f.afterMs);
+  }
 
   function onShown() {
+    holding = false;
     autoDone = false;
     okStartedDrag = false;
+    followUps = 0;
     cmd('hello');
     if (S.hint) cmd('hint', { text: S.hint });
   }
@@ -51,7 +72,7 @@
   }
 
   function onKey(k) {
-    const step = state.dragging ? S.dragStep(k.repeat) : S.moveStep(k.repeat);
+    const step = holding ? S.dragStep(k.repeat) : S.moveStep(k.repeat);
     switch (k.key) {
       case 'left':  if (k.down) cmd('move', { dx: -step, dy: 0 }); break;
       case 'right': if (k.down) cmd('move', { dx: step, dy: 0 }); break;
@@ -61,20 +82,20 @@
         // Short press = click. Hold = grab (then arrows drag). Press again = let go.
         if (k.down) {
           if (k.repeat === 0) okStartedDrag = false;
-          else if (!state.dragging && !okStartedDrag && k.held >= S.holdToGrabMs) { okStartedDrag = true; cmd('down'); }
+          else if (!holding && !okStartedDrag && k.held >= S.holdToGrabMs) { okStartedDrag = true; cmd('down'); }
         } else if (okStartedDrag) {
           okStartedDrag = false;            // keep holding after the long press ends
-        } else if (state.dragging) {
+        } else if (holding) {
           cmd('up');
         } else {
-          cmd('tap');
+          userClick();
         }
         break;
       case 'playpause':                     // also grabs / lets go
-        if (k.down && k.repeat === 0) cmd(state.dragging ? 'up' : 'down');
+        if (k.down && k.repeat === 0) cmd(holding ? 'up' : 'down');
         break;
       case 'back':                          // while holding: let go; otherwise close the website
-        if (!k.down) cmd(state.dragging ? 'up' : 'close');
+        if (!k.down) cmd(holding ? 'up' : 'close');
         break;
     }
   }
