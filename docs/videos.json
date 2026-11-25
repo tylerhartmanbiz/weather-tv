@@ -1,18 +1,34 @@
 {
   "source": "https://weather.com/",
-  "updated": "2026-11-25T00:19:44+00:00",
+  "updated": "2026-11-25T00:30:03+00:00",
+  "allowedHosts": [
+    "s.w-x.co",
+    "v.w-x.co"
+  ],
   "videos": [
     {
-      "title": "Florida good Samaritans band together for flood rescue",
-      "description": "Watch this video to see how a group of volunteers banded together to bring dozens of horses and ducks to dry ground.",
-      "thumbnail": "https://s.w-x.co/wxnext/img/video-still-7abed8b3-4510-4b45-8c62-74a914fe025a-1795195800914-2b5bbc.jpg",
-      "src": "https://v.w-x.co/digital_video/The_Weather_Channel_-_Reach_Engine/7abed8b3-4510-4b45-8c62-74a914fe025a/HORSES_RESCUEDmezz_HLSPlaylist.m3u8"
+      "title": "Kīlauea eruption: lava fountains 650 feet high in Hawaii",
+      "description": "Lava fountaining reached 650 feet in the air at Hawaii’s Kīlauea Volcano, which is currently experiencing its 57th eruption.",
+      "thumbnail": "https://s.w-x.co/wxnext/img/video-still-eaebf5d5-5896-4fcc-a96c-e6df6c9bf7d6-1795457751641-3b3103.jpg",
+      "src": "https://v.w-x.co/digital_video/The_Weather_Channel_-_Reach_Engine/eaebf5d5-5896-4fcc-a96c-e6df6c9bf7d6/H-LavaFountain3mezz_HLSPlaylist.m3u8"
     },
     {
-      "title": "LA County flood rescue: Helicopter saves woman in channel",
-      "description": "A Los Angeles County Fire Department helicopter crew spotted a woman swept into a flood channel, and their body cameras captured the dramatic rescue.",
-      "thumbnail": "https://s.w-x.co/wxnext/img/video-still-74b0e9e7-9865-4d41-b995-e181ad886ea0-1795179412021-2b4bbd.jpg",
-      "src": "https://v.w-x.co/digital_video/The_Weather_Channel_-_Reach_Engine/74b0e9e7-9865-4d41-b995-e181ad886ea0/HELICOPTER_RESCUEmezz_HLSPlaylist.m3u8"
+      "title": "Florida animal services, deputies deliver food amid flooding",
+      "description": "Volusia County Animal Services caught a ride with the Sheriff’s Office to deliver food and supplies to animals in need amid flooding in Florida on Sunday.",
+      "thumbnail": "https://s.w-x.co/wxnext/img/video-still-c5214807-7dfe-4caf-becc-7b16a8c4a351-1795441542267-203ed6.jpg",
+      "src": "https://v.w-x.co/digital_video/The_Weather_Channel_-_Reach_Engine/c5214807-7dfe-4caf-becc-7b16a8c4a351/florida-animal-services-floodmezz_HLSPlaylist.m3u8"
+    },
+    {
+      "title": "Flooding in Oak Hill, Florida submerges homes and farms",
+      "description": "Heavy rain on top of high tides flooded Oak Hill, Florida, in hours, submerging barns, moving cars and boats and leaving homes with structural damage.",
+      "thumbnail": "https://s.w-x.co/wxnext/img/video-still-f2fe1248-4a4d-44f9-a856-e9fbeb5ddb14-1795203971008-4148fd.jpg",
+      "src": "https://v.w-x.co/digital_video/The_Weather_Channel_-_Reach_Engine/f2fe1248-4a4d-44f9-a856-e9fbeb5ddb14/V2_1120_H_OakHillFloodingmezz_HLSPlaylist.m3u8"
+    },
+    {
+      "title": "Florida flooding: Troops perform high-water rescues in Cocoa",
+      "description": "The Army deployed troops to Cocoa, Florida, after heavy rainfall caused widespread flooding that swamped streets and stranded vehicles.",
+      "thumbnail": "https://s.w-x.co/wxnext/img/video-still-8c937ab7-1cf7-4a64-ac70-35868114e9f4-1795290280562-b7db83.jpg",
+      "src": "https://v.w-x.co/digital_video/The_Weather_Channel_-_Reach_Engine/8c937ab7-1cf7-4a64-ac70-35868114e9f4/H_Floodwaters_swamp_streets_in_Florida_as_troops_respondmezz_HLSPlaylist.m3u8"
     },
     {
       "title": "Soda Springs snowstorm: I-80 plows fight blowing snow in CA",
@@ -27,16 +43,64 @@
       "src": "https://v.w-x.co/digital_video/The_Weather_Channel_-_Reach_Engine/497b7c86-5d14-4773-855c-4e4cf3af99f3/Dried_up_lake_North_Carolina_amid_severe_drought_H_1mezz_HLSPlaylist.m3u8"
     },
     {
+      "title": "Unique winter destinations: Bryce Canyon national park",
+      "description": "Snow-dusted red rock hoodoos and dark, starry skies make Utah's Bryce Canyon National Park a stunning winter destination.",
+      "thumbnail": "https://s.w-x.co/wxnext/img/video-still-b6e0759a-5abd-4306-b935-a897633e38ea-1795119671615-6c834f.jpg",
+      "src": "https://v.w-x.co/digital_video/The_Weather_Channel_-_Reach_Engine/b6e0759a-5abd-4306-b935-a897633e38ea/BestNationalParksWintermezz_HLSPlaylist.m3u8"
+    },
+    {
+      "title": "Deep-fried turkey safety: wind, cold and rain dangers",
+      "description": "Deep-frying a turkey is risky enough, but wind, cold and moisture can turn hot oil into a fire hazard before your Thanksgiving dinner is done.",
+      "thumbnail": "https://s.w-x.co/wxnext/img/video-still-bf13d79a-1a96-45c9-8ab1-5b347a22cb20-1794513647944-77430b.jpg",
+      "src": "https://v.w-x.co/digital_video/The_Weather_Channel_-_Reach_Engine/bf13d79a-1a96-45c9-8ab1-5b347a22cb20/101_FRIED_TURKEY_AND_WXmezz_HLSPlaylist.m3u8"
+    },
+    {
+      "title": "What is an atmospheric river? How they form and are rated",
+      "description": "An atmospheric river is a long, narrow plume of moisture that carries tropical moisture thousands of miles, bringing heavy rain, flooding and landslides.",
+      "thumbnail": "https://s.w-x.co/wxnext/img/video-still-dcf50ae9-4538-451c-ab07-ea1380bbb378-1794517318710-9c9e0e.jpg",
+      "src": "https://v.w-x.co/digital_video/The_Weather_Channel_-_Reach_Engine/dcf50ae9-4538-451c-ab07-ea1380bbb378/V2_1112_AR_WxEx_CAITLINmezz_HLSPlaylist.m3u8"
+    },
+    {
+      "title": "How much wind can a plane land in? A meteorologist explains",
+      "description": "Planes struggled to land in 50 mph wind gusts, and some had to abort, but how much wind is actually too much for a plane to land?",
+      "thumbnail": "https://s.w-x.co/wxnext/img/video-still-b6722f49-f602-4120-90e2-6fe0351f183c-1795273490743-af50de.jpg",
+      "src": "https://v.w-x.co/digital_video/The_Weather_Channel_-_Reach_Engine/b6722f49-f602-4120-90e2-6fe0351f183c/How_much_wind_is_too_much_to_land_a_planemezz_HLSPlaylist.m3u8"
+    },
+    {
+      "title": "Watch: South Florida still flooded 5 days since rain began",
+      "description": "Nearly 450 flood rescues have been carried out in Florida this week as the state continues to grapple with flooding up and down the Atlantic coast.",
+      "thumbnail": "https://s.w-x.co/wxnext/img/video-still-fdc30c12-1f29-4222-9628-40ebd6fafb3d-1795371608709-003ee3.jpg",
+      "src": "https://v.w-x.co/digital_video/The_Weather_Channel_-_Reach_Engine/fdc30c12-1f29-4222-9628-40ebd6fafb3d/SouthFloridaSevereFloodingmezz_HLSPlaylist.m3u8"
+    },
+    {
+      "title": "Winter outlook: What will your temperatures feel like?",
+      "description": "Winter brings to mind the holiday season, cozy nights by the fireplace and chilly temperatures — but could El Niño flip the switch on the season?",
+      "thumbnail": "https://s.w-x.co/wxnext/img/video-still-29e3d062-2760-463f-a6bf-91d252a82da8-1789062386384-e39cfa.jpg",
+      "src": "https://v.w-x.co/digital_video/The_Weather_Channel_-_Reach_Engine/29e3d062-2760-463f-a6bf-91d252a82da8/V2_0910_H_WInterOutlookmezz_HLSPlaylist.m3u8"
+    },
+    {
+      "title": "Deadly supercell brings widespread devastation to Brazil town",
+      "description": "Tupanciretã, Brazil, was reeling on Saturday after a supercell killed at least three people and damaged thousands of buildings.",
+      "thumbnail": "https://s.w-x.co/wxnext/img/video-still-d5c6e53c-12b4-4b47-9e42-bbd132cd63f7-1795375870738-4ae360.jpg",
+      "src": "https://v.w-x.co/digital_video/The_Weather_Channel_-_Reach_Engine/d5c6e53c-12b4-4b47-9e42-bbd132cd63f7/TornadoBrazil11222026mezz_HLSPlaylist.m3u8"
+    },
+    {
+      "title": "Florida good Samaritans band together for flood rescue",
+      "description": "Watch this video to see how a group of volunteers banded together to bring dozens of horses and ducks to dry ground.",
+      "thumbnail": "https://s.w-x.co/wxnext/img/video-still-7abed8b3-4510-4b45-8c62-74a914fe025a-1795195800914-2b5bbc.jpg",
+      "src": "https://v.w-x.co/digital_video/The_Weather_Channel_-_Reach_Engine/7abed8b3-4510-4b45-8c62-74a914fe025a/HORSES_RESCUEDmezz_HLSPlaylist.m3u8"
+    },
+    {
+      "title": "LA County flood rescue: Helicopter saves woman in channel",
+      "description": "A Los Angeles County Fire Department helicopter crew spotted a woman swept into a flood channel, and their body cameras captured the dramatic rescue.",
+      "thumbnail": "https://s.w-x.co/wxnext/img/video-still-74b0e9e7-9865-4d41-b995-e181ad886ea0-1795179412021-2b4bbd.jpg",
+      "src": "https://v.w-x.co/digital_video/The_Weather_Channel_-_Reach_Engine/74b0e9e7-9865-4d41-b995-e181ad886ea0/HELICOPTER_RESCUEmezz_HLSPlaylist.m3u8"
+    },
+    {
       "title": "San Francisco flooding: USPS worker delivers in record rain",
       "description": "A postal worker waded through floodwaters in downtown San Francisco to deliver packages as record rain swamped the city on Wednesday.",
       "thumbnail": "https://s.w-x.co/wxnext/img/video-still-adb0febb-ed75-4699-871e-e82052fc1b68-1795107121832-06c0c3.jpg",
       "src": "https://v.w-x.co/digital_video/The_Weather_Channel_-_Reach_Engine/adb0febb-ed75-4699-871e-e82052fc1b68/USPS_driver_delivers_in_San_Fran_flooding_Hmezz_HLSPlaylist.m3u8"
-    },
-    {
-      "title": "Flooding in Oak Hill, Florida submerges homes and farms",
-      "description": "Heavy rain on top of high tides flooded Oak Hill, Florida, in hours, submerging barns, moving cars and boats and leaving homes with structural damage.",
-      "thumbnail": "https://s.w-x.co/wxnext/img/video-still-f2fe1248-4a4d-44f9-a856-e9fbeb5ddb14-1795203971008-4148fd.jpg",
-      "src": "https://v.w-x.co/digital_video/The_Weather_Channel_-_Reach_Engine/f2fe1248-4a4d-44f9-a856-e9fbeb5ddb14/V2_1120_H_OakHillFloodingmezz_HLSPlaylist.m3u8"
     },
     {
       "title": "Los Angeles floods as rain tops 2 inches an hour",
@@ -61,24 +125,6 @@
       "description": "Massive waves hitting California's Bay Area knocked a man completely off his feet as onlookers turned the waves into a game.",
       "thumbnail": "https://s.w-x.co/wxnext/img/video-still-ffacfa1e-4c12-4ea2-adb5-3e8d1e474298-1794943857468-c1cecb.jpg",
       "src": "https://v.w-x.co/digital_video/The_Weather_Channel_-_Reach_Engine/ffacfa1e-4c12-4ea2-adb5-3e8d1e474298/CAWavesKnockPeopleOvermezz_HLSPlaylist.m3u8"
-    },
-    {
-      "title": "What is an atmospheric river? How they form and are rated",
-      "description": "An atmospheric river is a long, narrow plume of moisture that carries tropical moisture thousands of miles, bringing heavy rain, flooding and landslides.",
-      "thumbnail": "https://s.w-x.co/wxnext/img/video-still-dcf50ae9-4538-451c-ab07-ea1380bbb378-1794517318710-9c9e0e.jpg",
-      "src": "https://v.w-x.co/digital_video/The_Weather_Channel_-_Reach_Engine/dcf50ae9-4538-451c-ab07-ea1380bbb378/V2_1112_AR_WxEx_CAITLINmezz_HLSPlaylist.m3u8"
-    },
-    {
-      "title": "Winter outlook: What will your temperatures feel like?",
-      "description": "Winter brings to mind the holiday season, cozy nights by the fireplace and chilly temperatures — but could El Niño flip the switch on the season?",
-      "thumbnail": "https://s.w-x.co/wxnext/img/video-still-29e3d062-2760-463f-a6bf-91d252a82da8-1789062386384-e39cfa.jpg",
-      "src": "https://v.w-x.co/digital_video/The_Weather_Channel_-_Reach_Engine/29e3d062-2760-463f-a6bf-91d252a82da8/V2_0910_H_WInterOutlookmezz_HLSPlaylist.m3u8"
-    },
-    {
-      "title": "Deep-fried turkey safety: wind, cold and rain dangers",
-      "description": "Deep-frying a turkey is risky enough, but wind, cold and moisture can turn hot oil into a fire hazard before your Thanksgiving dinner is done.",
-      "thumbnail": "https://s.w-x.co/wxnext/img/video-still-bf13d79a-1a96-45c9-8ab1-5b347a22cb20-1794513647944-77430b.jpg",
-      "src": "https://v.w-x.co/digital_video/The_Weather_Channel_-_Reach_Engine/bf13d79a-1a96-45c9-8ab1-5b347a22cb20/101_FRIED_TURKEY_AND_WXmezz_HLSPlaylist.m3u8"
     },
     {
       "title": "Bay Area flooding: Heavy rain floods roads, downs trees",

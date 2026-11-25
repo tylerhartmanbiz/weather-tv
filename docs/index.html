@@ -3,8 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- Only our own files, the pinned player library, and the allowlisted video/image hosts may load. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; connect-src 'self' https://v.w-x.co; media-src https://v.w-x.co blob:; img-src https://s.w-x.co; worker-src blob:">
+<!-- No frames, no forms, no plugins, https only. The TV app additionally only lets the
+     hosts listed in videos.json (written by scrapper.py) connect at all. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; connect-src 'self' https:; media-src https: blob:; img-src https:; worker-src blob:; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'">
 <title>Weather TV</title>
 <style>
   html, body { margin: 0; height: 100%; background: #000; color: #fff; font-family: system-ui, sans-serif; overflow: hidden; }
@@ -26,6 +27,12 @@
         integrity="sha384-p9vgU/7IYJWd3I4STrtqxqR/2cAQlhIX7D/HrTnIMEjjcUox165b7se7sxmm3zDg"
         crossorigin="anonymous"></script>
 <script>
+// Popup / new-site blocking: nothing on this page may open windows or leave the page.
+window.open = () => null;
+window.alert = window.confirm = window.prompt = () => {};
+document.addEventListener('click', e => { if (e.target.closest('a')) e.preventDefault(); }, true);
+</script>
+<script>
 const video = document.getElementById('v');
 const info = document.getElementById('info');
 const msg = document.getElementById('msg');
@@ -46,7 +53,8 @@ function play(i) {
     `${index + 1} / ${videos.length}  ·  ◀ ▶ change video  ·  OK pause/play`;
   if (item.thumbnail) video.poster = item.thumbnail;
   if (hls) { hls.destroy(); hls = null; }
-  if (window.Hls && Hls.isSupported()) {
+  const isHls = /\.m3u8(\?|$)/i.test(new URL(item.src).pathname + new URL(item.src).search);
+  if (isHls && window.Hls && Hls.isSupported()) {
     // Always use the best quality: lock to the highest-resolution/bitrate stream the TV
     // can decode (no adaptive drop-down), and buffer more ahead to avoid stalls.
     hls = new Hls({
@@ -67,7 +75,7 @@ function play(i) {
     hls.loadSource(item.src);
     hls.attachMedia(video);
   } else {
-    video.src = item.src; // native HLS
+    video.src = item.src; // .mp4, or native HLS
   }
   video.play().catch(() => {});
   showInfo();
@@ -88,8 +96,12 @@ document.addEventListener('keydown', e => {
 fetch('videos.json?t=' + Date.now(), { cache: 'no-store' })
   .then(r => r.json())
   .then(d => {
-    // Only accept https video URLs on the allowlisted host (the scraper checks this too).
-    videos = (d.videos || []).filter(v => /^https:\/\/v\.w-x\.co\/.+\.m3u8$/.test(v.src));
+    // Only accept https video URLs on the hosts the scraper allowed.
+    const allowed = new Set(d.allowedHosts || []);
+    videos = (d.videos || []).filter(v => {
+      try { const u = new URL(v.src); return u.protocol === 'https:' && allowed.has(u.hostname); }
+      catch (e) { return false; }
+    });
     if (!videos.length) throw new Error('no videos');
     play(0);
   })
