@@ -18,10 +18,6 @@
     moveStep: repeat => 14 + Math.min(repeat * 8, 60),   // pixels per arrow press (faster when held)
     dragStep: repeat => 8 + Math.min(repeat * 4, 40),    // same, while holding (finer)
     hint: '',                 // text for a bar at the bottom while the site is shown ('' = no bar)
-    // After each of your clicks (short OK), also click here, this long after. null = off.
-    // x / y are fractions of the screen: 0, 0 = top left, 1, 1 = bottom right.
-    // e.g. { afterMs: 500, x: 0.03, y: 0.97, onlyFirst: false } = bottom left, 0.5 s after.
-    followUpClick: null,
     // Hide the round cursor after this long without a button press (null = always show).
     // The next arrow / OK press only brings it back, in the same place.
     hideCursorAfterMs: 5000,
@@ -30,9 +26,9 @@
   // ---------- talking to the app ----------
   let chain = Promise.resolve();
   let state = {};               // {open, w, h, x, y, dragging, density} from the app
+  let holding = false;          // finger down? (known right away, not only after the app answers)
+  let swallow = null;          // a key whose press only revealed the cursor
   // Commands run one after another, in order (so a "down" never overtakes a "move").
-  let holding = false;
-  let swallow = null;          // a key whose press only revealed the cursor          // finger down? (known right away, not only after the app answers)
   function cmd(op, params) {
     if (op === 'down') holding = true;
     else if (op === 'up' || op === 'close') holding = false;
@@ -45,7 +41,6 @@
   // ---------- behaviour ----------
   let autoDone = false;
   let okStartedDrag = false;   // this OK press began the drag (its release keeps holding)
-  let followUps = 0;
 
   // ---------- hiding the cursor when the remote isn't used ----------
   let hideTimer = null, hiddenAt = null;   // hiddenAt = where the cursor was when hidden
@@ -65,25 +60,12 @@
     return true;
   }
 
-  // Your click, then (if set) the extra click near the bottom left.
-  function userClick() {
-    cmd('tap');
-    const f = S.followUpClick;
-    if (!f || (f.onlyFirst && followUps > 0)) return;
-    followUps++;
-    setTimeout(() => {
-      if (!state.open || !state.w) return;
-      cmd('tap', { x: Math.round(state.w * f.x), y: Math.round(state.h * f.y) });
-    }, f.afterMs);
-  }
-
   function onShown() {
     holding = false;
     hiddenAt = null;
     idle();
     autoDone = false;
     okStartedDrag = false;
-    followUps = 0;
     cmd('hello');
     if (S.hint) cmd('hint', { text: S.hint });
   }
@@ -117,7 +99,7 @@
         } else if (holding) {
           cmd('up');
         } else {
-          userClick();
+          cmd('tap');
         }
         break;
       case 'playpause':                     // also grabs / lets go
