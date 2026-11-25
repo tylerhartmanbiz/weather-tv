@@ -57,6 +57,11 @@
   .sel { display: flex; align-items: center; gap: .6rem; background: #161a20; border: 3px solid #2a313b;
          border-radius: .7rem; padding: .5rem 1rem; outline: none; font-size: 1.15rem; min-width: 9rem; }
   .sel:focus { border-color: #f5c518; }
+  #favBtn { display: inline-flex; margin-bottom: .8rem; font-size: 1.05rem; }
+  #favBtn .star { font-size: 1.3rem; color: #9aa4b1; }
+  #favBtn.on .star { color: #f5c518; }
+  #results li.head { color: #f5c518; font-weight: 700; padding: .2rem .8rem; border: 0; }
+  #results .fav { color: #f5c518; }
   .sel .lbl { color: #9aa4b1; font-size: .9rem; }
   .sel .val { font-weight: 700; min-width: 1.6rem; text-align: center; }
   .sel .arr { color: #555e6b; }
@@ -100,6 +105,7 @@
     <div id="dmeta"></div>
     <div id="dpills" class="pills"></div>
     <p id="dplot"></p>
+    <div class="sel" id="favBtn" tabindex="0"><span class="star">☆</span><span class="ftxt">Add to favorites</span></div>
     <div id="epick" class="hide">
       <div class="sel" id="selSeason" tabindex="0"><span class="lbl">Season</span><span class="arr">◀</span><span class="val" id="vSeason">1</span><span class="arr">▶</span></div>
       <div class="sel" id="selEpisode" tabindex="0"><span class="lbl">Episode</span><span class="arr">◀</span><span class="val" id="vEpisode">1</span><span class="arr">▶</span><span id="eptitle"></span></div>
@@ -310,7 +316,11 @@ async function imdbEpisodes(id, season) {
 })();
 let pendingOpen = null;
 window.siteEvent = ev => {
-  if (ev.type === 'result') { if (pendingOpen) { pendingOpen(ev.data); pendingOpen = null; } return; }
+  if (ev.type === 'result') {
+    if (pendingOpen) { pendingOpen(ev.data); pendingOpen = null; }
+    setTimeout(writeFavCookies, 1500); setTimeout(writeFavCookies, 5000);   // the website's close wiped them
+    return;
+  }
   try { if (window.SiteControl) window.SiteControl.onEvent(ev); } catch (e) { }
 };
 
@@ -325,7 +335,7 @@ async function openStream(t, season, episode) {
   const done = new Promise(res => { pendingOpen = res; });
   const r = await fetch('api/open?async=1&url=' + encodeURIComponent(url), { cache: 'no-store' });
   const j = await r.json();
-  if (!j.started) { pendingOpen = null; return j; }
+  if (!j.started) { pendingOpen = null; setTimeout(writeFavCookies, 1500); return j; }   // older app
   return done;
 }
 
@@ -394,17 +404,79 @@ video.addEventListener('ended', () => {
   else if (videos.length) play(index + 1);
 });
 
+// ---------- favorites ★ ----------
+// Kept by the app when it can (api/store, newer app versions). Otherwise in cookies, which are
+// written again after each website visit (the app wipes all cookies when the website closes).
+const FAV_FIELDS = ['id', 'title', 'year', 'type', 'isTv', 'poster', 'stars'];
+let favs = [], nativeStore = false;
+const isFav = id => favs.some(f => f.id === id);
+
+function readFavCookies() {
+  const m = {};
+  document.cookie.split('; ').forEach(c => { const i = c.indexOf('='); if (i > 0) m[c.slice(0, i)] = c.slice(i + 1); });
+  let txt = '';
+  for (let i = 0; m['fav' + i]; i++) txt += m['fav' + i];
+  try { const a = txt ? JSON.parse(decodeURIComponent(txt)) : []; return Array.isArray(a) ? a : []; } catch (e) { return []; }
+}
+function writeFavCookies() {
+  const parts = encodeURIComponent(JSON.stringify(favs)).match(/.{1,3500}/g) || [];
+  for (let i = 0; i < 20; i++) {
+    document.cookie = `fav${i}=${parts[i] || ''}; path=/weather-tv/; SameSite=Lax; Secure; ` +
+      (parts[i] ? 'max-age=315360000' : 'max-age=0');
+  }
+}
+async function loadFavs() {
+  const fromCookies = readFavCookies();
+  try {
+    const r = await fetch('api/store?key=favorites', { cache: 'no-store' });
+    if (r.ok) {
+      const j = await r.json();
+      if ('value' in j) {
+        nativeStore = true;
+        favs = j.value ? JSON.parse(j.value) : [];
+        if (!favs.length && fromCookies.length) { favs = fromCookies; saveFavs(); }   // move them over
+        return;
+      }
+    }
+  } catch (e) { }
+  favs = fromCookies;
+}
+async function saveFavs() {
+  writeFavCookies();
+  if (nativeStore) {
+    try { await fetch('api/store?key=favorites&value=' + encodeURIComponent(JSON.stringify(favs)), { cache: 'no-store' }); } catch (e) { }
+  }
+}
+function toggleFav() {
+  if (!current) return;
+  if (isFav(current.id)) favs = favs.filter(f => f.id !== current.id);
+  else {
+    const f = {};
+    FAV_FIELDS.forEach(k => { if (current[k] != null && current[k] !== '') f[k] = current[k]; });
+    favs.unshift(f);
+  }
+  saveFavs();
+  renderFav();
+}
+function renderFav() {
+  const on = !!current && isFav(current.id);
+  $('favBtn').classList.toggle('on', on);
+  $('favBtn').querySelector('.star').textContent = on ? '★' : '☆';
+  $('favBtn').querySelector('.ftxt').textContent = on ? 'Favorite' : 'Add to favorites';
+}
+
 // ---------- IMDb search ----------
 function openSearch() {
   show('search');
   if (!video.paused) video.pause();
+  if (!q.value.trim()) { results = favs.slice(); renderResults(); }   // empty box: your favorites
   q.focus();
 }
 
 q.addEventListener('input', () => {
   clearTimeout(searchTimer);
   const text = q.value.trim();
-  if (!text) { results = []; renderResults(); return; }
+  if (!text) { results = favs.slice(); renderResults(); return; }
   searchTimer = setTimeout(() => runSearch(text), 250);
 });
 
@@ -423,6 +495,7 @@ async function runSearch(text) {
 function renderResults(emptyText) {
   resultsEl.textContent = '';
   if (!results.length && emptyText && q.value.trim()) { resultsEl.append(el('li', 'm', emptyText)); return; }
+  if (!q.value.trim() && results.length) resultsEl.append(el('li', 'head', '★ Favorites'));
   results.forEach((r, i) => {
     const li = el('li');
     li.tabIndex = 0;
@@ -430,7 +503,9 @@ function renderResults(emptyText) {
     const p = img(r.poster, 80);
     if (p) { const im = el('img'); im.src = p; im.alt = ''; li.append(im); } else li.append(el('div', 'ph'));
     const box = el('div');
-    box.append(el('div', 't', r.title), el('div', 'm', [r.year, r.type, r.stars].filter(Boolean).join(' · ')));
+    const t = el('div', 't', r.title);
+    if (isFav(r.id)) t.prepend(el('span', 'fav', '★ '));
+    box.append(t, el('div', 'm', [r.year, r.type, r.stars].filter(Boolean).join(' · ')));
     li.append(box);
     resultsEl.append(li);
   });
@@ -464,6 +539,7 @@ function renderDetail(d) {
   $('dcastwrap').classList.toggle('hide', !(d.cast || []).length);
   $('epick').classList.toggle('hide', !d.isTv);
   if (d.isTv) renderPick();
+  renderFav();
 }
 
 // ---------- TV shows: season + episode picker ----------
@@ -618,15 +694,15 @@ document.addEventListener('keydown', e => {
     return;
   }
   if (screen === 'detail') {
-    const order = current && current.isTv ? [$('selSeason'), $('selEpisode'), $('openBtn')] : [$('openBtn')];
+    const order = current && current.isTv ? [$('favBtn'), $('selSeason'), $('selEpisode'), $('openBtn')] : [$('favBtn'), $('openBtn')];
     let i = order.indexOf(document.activeElement);
     if (i < 0) { order[order.length - 1].focus(); i = order.length - 1; }
     const f = order[i];
     if (k === 'ArrowDown') order[Math.min(i + 1, order.length - 1)].focus();
     else if (k === 'ArrowUp') order[Math.max(i - 1, 0)].focus();
-    else if ((k === 'ArrowLeft' || k === 'ArrowRight') && f.id !== 'openBtn')
+    else if ((k === 'ArrowLeft' || k === 'ArrowRight') && (f.id === 'selSeason' || f.id === 'selEpisode'))
       changePick(f.id === 'selSeason' ? 'season' : 'episode', k === 'ArrowRight' ? 1 : -1);
-    else if (k === 'Enter') { if (f.id === 'openBtn') openVideo(); else order[i + 1].focus(); }
+    else if (k === 'Enter') { if (f.id === 'openBtn') openVideo(); else if (f.id === 'favBtn') toggleFav(); else order[i + 1].focus(); }
     else return;
     e.preventDefault();
     return;
@@ -666,6 +742,7 @@ window.onTvBack = () => {
 };
 
 // ---------- start: default video list if there is one, otherwise straight to search ----------
+loadFavs().then(() => { if (screen === 'search' && !q.value.trim()) { results = favs.slice(); renderResults(); } });
 fetch('videos.json?t=' + Date.now(), { cache: 'no-store' })
   .then(r => r.json())
   .then(d => { videos = safeVideos(d); if (!videos.length) throw new Error('no videos'); play(0); })

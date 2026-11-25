@@ -313,6 +313,18 @@ public class MainActivity extends Activity {
                 body = "{\"started\":true}";
             } else if ("open".equals(name)) {
                 body = open(u.getQueryParameter("url")).toString();
+            } else if ("store".equals(name)) {
+                // Small saved values for the page (e.g. favorites): api/store?key=k[&value=v].
+                // Kept on the TV only, in the app's private storage; survives restarts.
+                String key = u.getQueryParameter("key");
+                if (key == null || !key.matches("[a-z0-9_-]{1,40}")) throw new Exception("bad key");
+                android.content.SharedPreferences p = getSharedPreferences("store", MODE_PRIVATE);
+                String value = u.getQueryParameter("value");
+                if (value != null) {
+                    if (value.length() > 200_000) throw new Exception("too big");
+                    p.edit().putString(key, value).apply();
+                }
+                body = "{\"value\":" + JSONObject.quote(p.getString(key, "")) + "}";
             } else if ("site".equals(name)) {
                 body = Scraper.command(this, root, u);
             } else {
