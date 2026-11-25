@@ -15,9 +15,11 @@ import android.os.Message;
 import android.os.SystemClock;
 import android.util.Log;
 import android.view.Gravity;
+import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
+import android.webkit.ConsoleMessage;
 import android.webkit.CookieManager;
 import android.webkit.DownloadListener;
 import android.webkit.GeolocationPermissions;
@@ -29,6 +31,7 @@ import android.webkit.ServiceWorkerClient;
 import android.webkit.ServiceWorkerController;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceError;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
@@ -40,9 +43,12 @@ import android.widget.TextView;
 
 import java.io.ByteArrayInputStream;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -79,6 +85,12 @@ final class Scraper {
 
     /** The browser identity the website sees; the safety check and player use it too. */
     static volatile String browserUa = "";
+
+    /** Host of the page the website view is on now (it can change with test method 3). */
+    static volatile String lastMainHost = null;
+
+    /** Request headers the website sent for each video link it asked for (test method 12). */
+    static final Map<String, Map<String, String>> seenHeaders = new ConcurrentHashMap<String, Map<String, String>>();
 
     /** "Chrome 91"-style name of this device's web engine, and its major version (0 if unknown). */
     static int webViewMajor() {
@@ -119,9 +131,22 @@ final class Scraper {
     static void blockServiceWorkers() {
         if (Build.VERSION.SDK_INT < 24) return;
         ServiceWorkerController c = ServiceWorkerController.getInstance();
-        c.getServiceWorkerWebSettings().setBlockNetworkLoads(true);
         c.getServiceWorkerWebSettings().setAllowFileAccess(false);
         c.getServiceWorkerWebSettings().setAllowContentAccess(false);
+        if (Methods.on(Methods.SERVICE_WORKERS | Methods.BARE)) {     // test methods 1, 14
+            c.getServiceWorkerWebSettings().setBlockNetworkLoads(false);
+            c.setServiceWorkerClient(new ServiceWorkerClient() {
+                @Override
+                public WebResourceResponse shouldInterceptRequest(WebResourceRequest r) {
+                    Session s = current;
+                    String path = r.getUrl().getPath() == null ? "" : r.getUrl().getPath().toLowerCase(Locale.ROOT);
+                    if (s != null && endsWithAny(path, VIDEO_EXT)) note(s, r.getUrl().toString(), r.getRequestHeaders(), "service worker");
+                    return null;
+                }
+            });
+            return;
+        }
+        c.getServiceWorkerWebSettings().setBlockNetworkLoads(true);
         c.setServiceWorkerClient(new ServiceWorkerClient() {
             @Override
             public WebResourceResponse shouldInterceptRequest(WebResourceRequest r) { return blocked(); }
@@ -137,6 +162,21 @@ final class Scraper {
         CursorView cursor;
         TextView hint;
         volatile String ended;   // null while open; then "cancelled" or "crashed"
+        Set<String> found;
+        LinkedBlockingQueue<String> queue;
+        volatile String pageSite;  // site of the page shown now
+        boolean dragging;          // holding the "finger" down (drag mode)
+        long dragDownTime;
+        boolean okStartedDrag;     // this OK press began the drag (its release keeps holding)
+    }
+
+    /** A video link the website asked for: remember it (and its headers) for the checker. */
+    static void note(Session s, String url, Map<String, String> headers, String how) {
+        if (s.found.size() < 50 && s.found.add(url)) {
+            log("video link found (" + how + ")", url);
+            if (headers != null) seenHeaders.put(url, new HashMap<String, String>(headers));
+            s.queue.offer(url);
+        }
     }
 
     private static Session current;
@@ -152,6 +192,11 @@ final class Scraper {
         final Set<String> found = Collections.synchronizedSet(new LinkedHashSet<String>());
         final LinkedBlockingQueue<String> queue = new LinkedBlockingQueue<String>();
         final Session s = new Session();
+        s.found = found;
+        s.queue = queue;
+        s.pageSite = site;
+        seenHeaders.clear();
+        lastMainHost = Uri.parse(url).getHost();
         final CountDownLatch shown = new CountDownLatch(1);
 
         act.runOnUiThread(new Runnable() { public void run() {
@@ -159,6 +204,7 @@ final class Scraper {
             FrameLayout.LayoutParams full = new FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT);
             root.addView(s.web, full);
+            if (Methods.on(Methods.FOCUS)) s.web.requestFocus();
             s.cursor = new CursorView(act);
             root.addView(s.cursor, new FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
@@ -173,13 +219,26 @@ final class Scraper {
             bottom.bottomMargin = 30;
             root.addView(s.hint, bottom);
             int engine = webViewMajor();
-            hint(s, "Start the video on the website.   Move: \u25C0 \u25B2 \u25BC \u25B6   Click: OK   Cancel: Back"
+            hint(s, MAIN_HINT
                     + (engine > 0 && engine < 110 ? "\nThis device's web engine is old (Chrome " + engine
                     + "), so some websites won't work. Update the device's software." : ""));
             log("web engine: Chrome " + engine, null);
             current = s;
             log("website shown", url);
-            s.web.loadUrl(url);
+            final Map<String, String> extra = new HashMap<String, String>();
+            if (Methods.on(Methods.GOOGLE_REFERER)) extra.put("Referer", "https://www.google.com/");
+            if (Methods.on(Methods.HOME_FIRST)) {                 // test method 23
+                String home = "https://" + Uri.parse(url).getHost() + "/";
+                log("opening the homepage first", home);
+                s.web.loadUrl(home, extra);
+                new Handler(Looper.getMainLooper()).postDelayed(new Runnable() { public void run() {
+                    if (s.web == null || s.ended != null) return;
+                    log("now the video page", url);
+                    s.web.loadUrl(url, extra);
+                }}, 8000);
+            } else {
+                s.web.loadUrl(url, extra);
+            }
             shown.countDown();
         }});
         shown.await(5, TimeUnit.SECONDS);
@@ -194,6 +253,7 @@ final class Scraper {
                 if (++tick % 2 == 0) scanPage(act, s, found, queue);   // links written in the page
                 continue;
             }
+            if (s.ended != null) { result = s.ended; break; }
             setHint(act, s, "Video found, checking it\u2026");
             if (checker.accept(src)) { result = "ok"; break; }
             setHint(act, s, "That video link can't be played safely. Keep trying, or Back to cancel.");
@@ -214,13 +274,19 @@ final class Scraper {
         return result;
     }
 
+    static final String MAIN_HINT = "Start the video on the website.   Move: \u25C0 \u25B2 \u25BC \u25B6   Click: OK"
+            + "   Drag: hold OK   Cancel: Back";
+    private static final String DRAG_HINT = "HOLDING \u2014 move with \u25C0 \u25B2 \u25BC \u25B6, then press OK to let go";
+    private static final long HOLD_MS = 800;   // hold OK this long to grab (start dragging)
+
     /** Remote keys while the website is on screen (UI thread). True = handled here. */
     static boolean handleKey(KeyEvent e) {
         Session s = current;
         if (s == null || s.web == null || s.ended != null) return false;
         int code = e.getKeyCode();
         boolean down = e.getAction() == KeyEvent.ACTION_DOWN;
-        float step = 14 + Math.min(e.getRepeatCount() * 8, 60);   // faster while held
+        // Faster while an arrow is held; while dragging, a bit finer for exact placement.
+        float step = s.dragging ? 8 + Math.min(e.getRepeatCount() * 4, 40) : 14 + Math.min(e.getRepeatCount() * 8, 60);
         CursorView c = s.cursor;
         switch (code) {
             case KeyEvent.KEYCODE_DPAD_LEFT:  if (down) move(s, -step, 0); return true;
@@ -231,28 +297,96 @@ final class Scraper {
             case KeyEvent.KEYCODE_ENTER:
             case KeyEvent.KEYCODE_NUMPAD_ENTER:
             case KeyEvent.KEYCODE_BUTTON_A:
-                if (down && e.getRepeatCount() == 0) tap(s.web, c.x, c.y);
+                // Short press = click. Hold ~1 s = grab (then arrows drag). Press again = let go.
+                if (down) {
+                    if (e.getRepeatCount() == 0) {
+                        s.okStartedDrag = false;
+                    } else if (!s.dragging && !s.okStartedDrag && e.getEventTime() - e.getDownTime() >= HOLD_MS) {
+                        startDrag(s);
+                        s.okStartedDrag = true;
+                    }
+                } else if (s.okStartedDrag) {
+                    s.okStartedDrag = false;           // keep holding after the long press ends
+                } else if (s.dragging) {
+                    endDrag(s);
+                } else if (Methods.on(Methods.MOUSE)) {
+                    mouseClick(s.web, c.x, c.y);
+                } else {
+                    tap(s.web, c.x, c.y);
+                }
+                return true;
+            case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE:     // also grabs / lets go
+            case KeyEvent.KEYCODE_MEDIA_PLAY:
+            case KeyEvent.KEYCODE_MEDIA_PAUSE:
+            case KeyEvent.KEYCODE_SPACE:
+                if (down && e.getRepeatCount() == 0) { if (s.dragging) endDrag(s); else startDrag(s); }
                 return true;
             case KeyEvent.KEYCODE_BACK:
             case KeyEvent.KEYCODE_ESCAPE:
-                if (!down) { s.ended = "cancelled"; hint(s, "Closing\u2026"); }
+                if (!down) {
+                    if (s.dragging) endDrag(s);        // Back while holding = let go, not close
+                    else { s.ended = "cancelled"; hint(s, "Closing\u2026"); }
+                }
                 return true;
             default:
                 return true;   // nothing else reaches the app while the website is shown
         }
     }
 
-    /** Move the cursor; pushing past an edge scrolls the page instead. */
+    /** Put the "finger" down at the cursor and keep it there (drag mode). */
+    private static void startDrag(Session s) {
+        CursorView c = s.cursor;
+        s.dragging = true;
+        s.dragDownTime = SystemClock.uptimeMillis();
+        press(s, MotionEvent.ACTION_DOWN, c.x, c.y);
+        c.setHolding(true);
+        hint(s, DRAG_HINT);
+        log("drag: holding", null);
+    }
+
+    /** Lift the "finger" where the cursor is now. */
+    private static void endDrag(Session s) {
+        CursorView c = s.cursor;
+        press(s, MotionEvent.ACTION_UP, c.x, c.y);
+        s.dragging = false;
+        c.setHolding(false);
+        hint(s, MAIN_HINT);
+        log("drag: let go", null);
+    }
+
+    /** One step of the held gesture (touch, or mouse with the button down for test method 18). */
+    private static void press(Session s, int action, float x, float y) {
+        if (Methods.on(Methods.MOUSE)) {
+            mouse(s.web, action, x, y, action == MotionEvent.ACTION_UP ? 0 : MotionEvent.BUTTON_PRIMARY, s.dragDownTime);
+            return;
+        }
+        MotionEvent ev = MotionEvent.obtain(s.dragDownTime, SystemClock.uptimeMillis(), action, x, y, 0);
+        s.web.dispatchTouchEvent(ev);
+        ev.recycle();
+    }
+
+    /** Move the cursor; pushing past an edge scrolls the page instead. While dragging, the held
+     *  "finger" slides along in small steps (no scrolling), like a real drag. */
     private static void move(Session s, float dx, float dy) {
         CursorView c = s.cursor;
         float w = c.getWidth(), h = c.getHeight(), m = 8;
         float nx = c.x + dx, ny = c.y + dy;
+        if (s.dragging) {
+            nx = Math.max(m, Math.min(w - m, nx));
+            ny = Math.max(m, Math.min(h - m, ny));
+            float x0 = c.x, y0 = c.y;
+            int n = Math.max(1, (int) Math.ceil(Math.hypot(nx - x0, ny - y0) / 6));
+            for (int i = 1; i <= n; i++) press(s, MotionEvent.ACTION_MOVE, x0 + (nx - x0) * i / n, y0 + (ny - y0) * i / n);
+            c.moveTo(nx, ny);
+            return;
+        }
         int sx = 0, sy = 0;
         if (nx < m) { sx = (int) (nx - m); nx = m; }
         if (nx > w - m) { sx = (int) (nx - (w - m)); nx = w - m; }
         if (ny < m) { sy = (int) (ny - m); ny = m; }
         if (ny > h - m) { sy = (int) (ny - (h - m)); ny = h - m; }
         c.moveTo(nx, ny);
+        if (Methods.on(Methods.MOUSE)) mouse(s.web, MotionEvent.ACTION_HOVER_MOVE, nx, ny, 0, SystemClock.uptimeMillis());
         if (sx != 0 || sy != 0) {
             float d = s.web.getResources().getDisplayMetrics().density;
             s.web.evaluateJavascript("window.scrollBy(" + Math.round(sx * 3 / d) + "," + Math.round(sy * 3 / d) + ")", null);
@@ -270,8 +404,41 @@ final class Scraper {
         up.recycle();
     }
 
-    private static void hint(Session s, String text) {
-        if (s.hint != null) s.hint.setText(text);
+    /** A mouse event (test method 18): hover, press, release, like a real mouse pointer. */
+    private static void mouse(WebView w, int action, float x, float y, int buttons, long downTime) {
+        MotionEvent.PointerProperties pp = new MotionEvent.PointerProperties();
+        pp.id = 0;
+        pp.toolType = MotionEvent.TOOL_TYPE_MOUSE;
+        MotionEvent.PointerCoords pc = new MotionEvent.PointerCoords();
+        pc.x = x;
+        pc.y = y;
+        pc.pressure = buttons != 0 ? 1f : 0f;
+        pc.size = 1f;
+        MotionEvent ev = MotionEvent.obtain(downTime, SystemClock.uptimeMillis(), action, 1,
+                new MotionEvent.PointerProperties[]{pp}, new MotionEvent.PointerCoords[]{pc}, 0, buttons,
+                1f, 1f, 0, 0, InputDevice.SOURCE_MOUSE, 0);
+        if (action == MotionEvent.ACTION_HOVER_MOVE) w.dispatchGenericMotionEvent(ev); else w.dispatchTouchEvent(ev);
+        ev.recycle();
+    }
+
+    private static void mouseClick(WebView w, float x, float y) {
+        long t = SystemClock.uptimeMillis();
+        mouse(w, MotionEvent.ACTION_HOVER_MOVE, x, y, 0, t);
+        mouse(w, MotionEvent.ACTION_DOWN, x, y, MotionEvent.BUTTON_PRIMARY, t);
+        mouse(w, MotionEvent.ACTION_UP, x, y, 0, t);
+    }
+
+    private static void hint(final Session s, String text) {
+        if (s.hint == null) return;
+        s.hint.setText(text);
+        s.hint.setVisibility(View.VISIBLE);
+        if (Methods.on(Methods.HIDE_HINT)) {                   // test method 20
+            final TextView h = s.hint;
+            final String shownText = text;
+            h.postDelayed(new Runnable() { public void run() {
+                if (shownText.equals(h.getText().toString())) h.setVisibility(View.GONE);
+            }}, 6000);
+        }
     }
 
     private static void setHint(Activity act, final Session s, final String text) {
@@ -319,6 +486,9 @@ final class Scraper {
 
         void moveTo(float nx, float ny) { x = nx; y = ny; invalidate(); }
 
+        /** Blue while holding (dragging), white otherwise. */
+        void setHolding(boolean on) { fill.setColor(on ? 0xEE3D7CFF : 0xEEFFFFFF); ring.setStrokeWidth(on ? 6 : 4); invalidate(); }
+
         @Override
         protected void onDraw(Canvas c) {
             if (x < 0) { x = getWidth() / 2f; y = getHeight() / 2f; }
@@ -348,15 +518,62 @@ final class Scraper {
         WebStorage.getInstance().deleteAllData();
     }
 
+    /** Test method 11: report fetch/XHR answers that are HLS playlists, whatever their name. */
+    private static final String SNIFF_JS = "(function(){if(window.__vtv)return;window.__vtv=1;"
+            + "function rep(u){try{u=new URL(u,location.href).href;if(u.indexOf('https:')!==0)return;"
+            + "(new Image()).src='/__videotv_found__?u='+encodeURIComponent(u)}catch(e){}}"
+            + "function hls(ct){return ct&&/mpegurl/i.test(ct)}"
+            + "var F=window.fetch;if(F)window.fetch=function(){var p=F.apply(this,arguments);try{p.then(function(r){try{"
+            + "var ct=r.headers.get('content-type')||'',n=+(r.headers.get('content-length')||0);"
+            + "if(hls(ct))rep(r.url);else if(/text|json|octet/i.test(ct)&&n<2000000)r.clone().text().then(function(t){"
+            + "if(t.slice(0,7)==='#EXTM3U')rep(r.url)})}catch(e){}})}catch(e){}return p};"
+            + "var O=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){var x=this;try{"
+            + "x.addEventListener('load',function(){try{var ct=x.getResponseHeader('content-type')||'';"
+            + "if(hls(ct))rep(x.responseURL);else if((x.responseType===''||x.responseType==='text')&&"
+            + "String(x.responseText).slice(0,7)==='#EXTM3U')rep(x.responseURL)}catch(e){}})}catch(e){}"
+            + "return O.apply(this,arguments)}})()";
+
+    /** Test method 21: look like normal Chrome to scripts that check for an app's browser. */
+    private static final String STEALTH_JS = "(function(){try{"
+            + "if(!window.chrome)window.chrome={runtime:{},app:{isInstalled:false},csi:function(){return{}},"
+            + "loadTimes:function(){return{}}};"
+            + "Object.defineProperty(Navigator.prototype,'webdriver',{get:function(){return false},configurable:true});"
+            + "var d=navigator.userAgentData;if(d&&d.brands){var v=(d.brands.filter(function(b){return/Chrom/.test(b.brand)})[0]||{version:'130'}).version;"
+            + "var b=[{brand:'Google Chrome',version:v},{brand:'Chromium',version:v},{brand:'Not_A Brand',version:'24'}];"
+            + "var f={brands:b,mobile:d.mobile,platform:d.platform,toJSON:function(){return{brands:b,mobile:d.mobile,platform:d.platform}},"
+            + "getHighEntropyValues:function(h){return d.getHighEntropyValues(h).then(function(r){r.brands=b;"
+            + "r.fullVersionList=b;return r})}};"
+            + "Object.defineProperty(Navigator.prototype,'userAgentData',{get:function(){return f},configurable:true})}"
+            + "if(navigator.plugins&&navigator.plugins.length===0)Object.defineProperty(Navigator.prototype,'plugins',"
+            + "{get:function(){return[1,2,3]},configurable:true});"
+            + "}catch(e){}})()";
+
+    private static final String[] NOT_A_PLAYLIST = {".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg",
+            ".ico", ".woff", ".woff2", ".ttf", ".html", ".php"};
+
+    /** Test method 11: a request that might be a playlist even without .m3u8 in its name. */
+    private static boolean maybePlaylist(String full, String path) {
+        if (endsWithAny(path, NOT_A_PLAYLIST)) return false;
+        return full.contains("m3u8") || path.contains("/hls/") || path.contains("playlist") || path.contains("manifest")
+                || path.endsWith("/master") || path.endsWith("/index")
+                || ((path.endsWith(".txt") || path.endsWith(".json"))
+                    && (path.contains("video") || path.contains("stream") || path.contains("source")));
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
-    private static WebView build(Activity act, final FrameLayout root, final Session session, final String site,
+    private static WebView build(final Activity act, final FrameLayout root, final Session session, final String site,
                                  final String startUrl, final Set<String> found,
                                  final LinkedBlockingQueue<String> queue) {
         final AtomicInteger sentBack = new AtomicInteger(0);
+        final boolean bare = Methods.on(Methods.BARE), loose = Methods.loose(), follow = Methods.follow();
+        final boolean letMedia = bare || Methods.on(Methods.LET_MEDIA), sniff = Methods.on(Methods.SNIFF);
+        final boolean adblock = Methods.on(Methods.ADBLOCK), testing = Methods.testing();
         final WebView w = new WebView(act);
-        w.setFocusable(false);
-        w.setFocusableInTouchMode(false);
+        boolean focus = Methods.on(Methods.FOCUS);
+        w.setFocusable(focus);
+        w.setFocusableInTouchMode(focus);
         w.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+        if (Methods.on(Methods.SOFTWARE)) w.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
 
         WebSettings s = w.getSettings();
         s.setJavaScriptEnabled(true);          // the site's player needs it; it runs sandboxed
@@ -366,19 +583,32 @@ final class Scraper {
         s.setAllowContentAccess(false);
         s.setAllowFileAccessFromFileURLs(false);
         s.setAllowUniversalAccessFromFileURLs(false);
-        s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        s.setMixedContentMode(loose ? WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE : WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         s.setJavaScriptCanOpenWindowsAutomatically(false);
-        s.setSupportMultipleWindows(true);     // window.open goes to onCreateWindow, which refuses
+        s.setSupportMultipleWindows(!bare);    // window.open goes to onCreateWindow, which refuses
         s.setGeolocationEnabled(false);
         s.setSaveFormData(false);
-        s.setCacheMode(WebSettings.LOAD_NO_CACHE);
-        if (Build.VERSION.SDK_INT >= 26) s.setSafeBrowsingEnabled(true);
-        // Present as plain Chrome (what this engine is), not as an app's embedded browser ("; wv"),
-        // which many sites refuse. You're the one using it.
-        s.setUserAgentString(s.getUserAgentString().replace("; wv)", ")").replaceAll("Version/\\d+(\\.\\d+)* ", ""));
+        s.setCacheMode(bare || Methods.on(Methods.CACHE) ? WebSettings.LOAD_DEFAULT : WebSettings.LOAD_NO_CACHE);
+        if (Build.VERSION.SDK_INT >= 26) s.setSafeBrowsingEnabled(!bare && !Methods.on(Methods.NO_SAFE_BROWSING));
+        int major = webViewMajor() > 0 ? webViewMajor() : 130;
+        if (Methods.on(Methods.DESKTOP)) {                       // test method 8
+            s.setUserAgentString("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/"
+                    + major + ".0.0.0 Safari/537.36");
+            s.setUseWideViewPort(true);
+            s.setLoadWithOverviewMode(true);
+        } else if (Methods.on(Methods.PHONE)) {                  // test method 9
+            s.setUserAgentString("Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/"
+                    + major + ".0.0.0 Mobile Safari/537.36");
+        } else if (!bare && !Methods.on(Methods.STOCK_UA)) {
+            // Present as plain Chrome (what this engine is), not as an app's embedded browser ("; wv"),
+            // which many sites refuse. You're the one using it.
+            s.setUserAgentString(s.getUserAgentString().replace("; wv)", ")").replaceAll("Version/\\d+(\\.\\d+)* ", ""));
+        }
         browserUa = s.getUserAgentString();
+        if (testing) log("browser identity: " + browserUa, null);
         // Players embedded from another domain often need their own cookies. All cookies are
         // wiped when the website closes.
+        CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(w, true);
 
         w.setDownloadListener(new DownloadListener() {
@@ -389,12 +619,16 @@ final class Scraper {
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
                 Uri u = r.getUrl();
+                String scheme = u.getScheme() == null ? "" : u.getScheme();
                 String host = u.getHost() == null ? "" : u.getHost().toLowerCase(Locale.ROOT);
-                if (!"https".equals(u.getScheme()) || !Net.isPublicHostname(host)) {   // intent:, market:, ...
+                boolean web = "https".equals(scheme) || (loose && "http".equals(scheme));
+                if (!web || (!loose && !Net.isPublicHostname(host))) {   // intent:, market:, ...
                     log("BLOCKED navigation", u.toString());
                     return true;
                 }
+                if (adblock && Methods.isAd(host)) { log("ad blocked (navigation)", u.toString()); return true; }
                 if (r.isForMainFrame() && !site.equals(Net.siteOf(host))) {             // stay on the site
+                    if (follow) { log("following the site to another domain", u.toString()); return false; }
                     log("BLOCKED redirect to another site", u.toString());
                     return true;
                 }
@@ -407,20 +641,27 @@ final class Scraper {
                 String scheme = u.getScheme() == null ? "" : u.getScheme();
                 if ("data".equals(scheme) || "blob".equals(scheme)) return null;
                 String host = u.getHost() == null ? "" : u.getHost().toLowerCase(Locale.ROOT);
-                if (!"https".equals(scheme) || !Net.isPublicHostname(host) || !Net.resolvesPublic(host)) {
+                String path = u.getPath() == null ? "" : u.getPath().toLowerCase(Locale.ROOT);
+                if (sniff && "/__videotv_found__".equals(path)) {       // reported by SNIFF_JS
+                    String f = u.getQueryParameter("u");
+                    if (f != null && f.startsWith("https://")) note(session, f, null, "hidden playlist, seen by the page hook");
+                    return blocked();
+                }
+                if (loose) {
+                    if (!"https".equals(scheme) && !"http".equals(scheme)) return blocked();
+                } else if (!"https".equals(scheme) || !Net.isPublicHostname(host) || !Net.resolvesPublic(host)) {
                     log("BLOCKED (not https, a home-network address, or the site doesn't exist)", u.toString());
                     return blocked();
                 }
-                String path = u.getPath() == null ? "" : u.getPath().toLowerCase(Locale.ROOT);
-                if (endsWithAny(path, VIDEO_EXT)) {         // the prize: note it, don't download it
-                    if (found.size() < 50 && found.add(u.toString())) {
-                        log("video link found (not downloaded)", u.toString());
-                        queue.offer(u.toString());
-                    }
-                    return blocked();
+                if (adblock && Methods.isAd(host)) return blocked();
+                String full = u.toString().toLowerCase(Locale.ROOT);
+                boolean video = endsWithAny(path, VIDEO_EXT);
+                if (video || (sniff && maybePlaylist(full, path))) {   // the prize: note it
+                    if ("https".equals(scheme)) note(session, u.toString(), r.getRequestHeaders(), video ? "not downloaded" : "maybe a hidden playlist");
+                    return video && !letMedia ? blocked() : null;
                 }
-                if (endsWithAny(path, BLOCK_EXT)) return blocked();
-                if (r.isForMainFrame() && !site.equals(Net.siteOf(host))) {
+                if (endsWithAny(path, BLOCK_EXT) && !letMedia) return blocked();
+                if (r.isForMainFrame() && !follow && !site.equals(Net.siteOf(host))) {
                     log("BLOCKED page from another site", u.toString());
                     return blocked();
                 }
@@ -431,7 +672,7 @@ final class Scraper {
             public boolean onRenderProcessGone(WebView v, RenderProcessGoneDetail d) {
                 // The page crashed its sandbox: throw this WebView away (it must not be used
                 // again), keep the app running.
-                log("website crashed; discarded", null);
+                log("website crashed; discarded" + (Build.VERSION.SDK_INT >= 26 && !d.didCrash() ? " (ran out of memory)" : ""), null);
                 session.ended = "crashed";
                 root.removeView(v);
                 return true;
@@ -439,10 +680,17 @@ final class Scraper {
 
             @Override
             public void onPageStarted(WebView v, String u, Bitmap icon) {
-                // Last line of defence: if the page ended up on another site anyway, stop it
-                // and send it back to the video page (a few times at most).
+                if (u != null && !u.startsWith("about:")) {
+                    if (Methods.on(Methods.STEALTH)) v.evaluateJavascript(STEALTH_JS, null);
+                    if (sniff) v.evaluateJavascript(SNIFF_JS, null);
+                }
+                if (testing) log("page started", u);
                 if (u == null || u.startsWith("about:")) return;
                 String host = Uri.parse(u).getHost();
+                if (host != null) { lastMainHost = host; session.pageSite = Net.siteOf(host); }
+                if (follow) return;
+                // Last line of defence: if the page ended up on another site anyway, stop it
+                // and send it back to the video page (a few times at most).
                 if (host != null && site.equals(Net.siteOf(host))) return;
                 v.stopLoading();
                 if (sentBack.incrementAndGet() > 3) {
@@ -454,29 +702,74 @@ final class Scraper {
                 }
             }
 
+            @Override
+            public void onPageFinished(WebView v, String u) {
+                if (sniff && u != null && !u.startsWith("about:")) v.evaluateJavascript(SNIFF_JS, null);
+                if (testing) log("page finished loading", u);
+            }
+
+            @Override
+            public void onReceivedHttpError(WebView v, WebResourceRequest r, WebResourceResponse resp) {
+                if (testing && r.isForMainFrame()) log("PAGE ERROR: HTTP " + resp.getStatusCode() + " " + resp.getReasonPhrase(), r.getUrl().toString());
+            }
+
+            @Override
+            public void onReceivedError(WebView v, WebResourceRequest r, WebResourceError e) {
+                if (testing && r.isForMainFrame()) log("PAGE ERROR: " + e.getErrorCode() + " " + e.getDescription(), r.getUrl().toString());
+            }
         });
 
         w.setWebChromeClient(new WebChromeClient() {
             @Override
-            public boolean onCreateWindow(WebView v, boolean dialog, boolean gesture, Message m) {
+            public boolean onCreateWindow(final WebView v, boolean dialog, boolean gesture, Message m) {
+                if (bare) return false;
+                final boolean inPlace = Methods.on(Methods.POPUPS);
                 // Some sites only play after their popup "opened". Give it an empty, invisible
                 // window that can't run scripts or load anything, and throw it away shortly.
-                log("BLOCKED popup / new window (it gets an empty window that loads nothing)", null);
+                // (Test method 4: if the popup is on the same site, open it in place instead.)
+                log(inPlace ? "popup / new window: opening it here if it's on the same site"
+                        : "BLOCKED popup / new window (it gets an empty window that loads nothing)", null);
                 try {
                     final WebView dummy = new WebView(v.getContext());
+                    final Handler ui = new Handler(Looper.getMainLooper());
+                    final boolean[] taken = {false};
                     dummy.getSettings().setJavaScriptEnabled(false);
                     dummy.getSettings().setAllowFileAccess(false);
                     dummy.getSettings().setAllowContentAccess(false);
                     dummy.setWebViewClient(new WebViewClient() {
-                        @Override
-                        public boolean shouldOverrideUrlLoading(WebView d, WebResourceRequest r) { return true; }
+                        void take(final String url) {
+                            if (!inPlace) return;
+                            ui.post(new Runnable() { public void run() {
+                                if (taken[0] || session.web != v || session.ended != null) return;
+                                taken[0] = true;
+                                Uri u = Uri.parse(url);
+                                String h = u.getHost() == null ? "" : u.getHost().toLowerCase(Locale.ROOT);
+                                String hs = Net.siteOf(h);
+                                if ("https".equals(u.getScheme()) && (hs.equals(site) || hs.equals(session.pageSite))
+                                        && !(adblock && Methods.isAd(h))) {
+                                    log("popup is on the same site: opened here", url);
+                                    v.loadUrl(url);
+                                } else {
+                                    log("BLOCKED popup to another site", url);
+                                }
+                            }});
+                        }
 
                         @Override
-                        public WebResourceResponse shouldInterceptRequest(WebView d, WebResourceRequest r) { return blocked(); }
+                        public boolean shouldOverrideUrlLoading(WebView d, WebResourceRequest r) {
+                            take(r.getUrl().toString());
+                            return true;
+                        }
+
+                        @Override
+                        public WebResourceResponse shouldInterceptRequest(WebView d, WebResourceRequest r) {
+                            if (r.isForMainFrame()) take(r.getUrl().toString());
+                            return blocked();
+                        }
                     });
                     ((WebView.WebViewTransport) m.obj).setWebView(dummy);
                     m.sendToTarget();
-                    new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
+                    ui.postDelayed(new Runnable() {
                         public void run() { dummy.destroy(); }
                     }, 3000);
                     return true;
@@ -486,7 +779,19 @@ final class Scraper {
             }
 
             @Override
-            public void onPermissionRequest(PermissionRequest r) { log("DENIED permission request", r.getOrigin().toString()); r.deny(); }
+            public void onPermissionRequest(PermissionRequest r) {
+                if (Methods.on(Methods.DRM | Methods.BARE)) {           // test methods 1, 17
+                    for (String res : r.getResources()) {
+                        if (PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID.equals(res)) {
+                            log("ALLOWED protected media (DRM) request", r.getOrigin().toString());
+                            r.grant(new String[]{PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID});
+                            return;
+                        }
+                    }
+                }
+                log("DENIED permission request", r.getOrigin().toString());
+                r.deny();
+            }
 
             @Override
             public void onGeolocationPermissionsShowPrompt(String origin, GeolocationPermissions.Callback cb) {
@@ -494,16 +799,40 @@ final class Scraper {
             }
 
             @Override
-            public boolean onJsAlert(WebView v, String url, String msg, JsResult r) { log("BLOCKED alert dialog", null); r.cancel(); return true; }
+            public boolean onConsoleMessage(ConsoleMessage c) {
+                if (testing && c.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
+                    String msg = c.message() == null ? "" : c.message();
+                    log("page console error: " + (msg.length() > 200 ? msg.substring(0, 200) + "..." : msg), null);
+                }
+                return true;
+            }
 
             @Override
-            public boolean onJsConfirm(WebView v, String url, String msg, JsResult r) { r.cancel(); return true; }
+            public boolean onJsAlert(WebView v, String url, String msg, JsResult r) {
+                if (bare) return false;
+                if (Methods.on(Methods.DIALOGS)) { log("alert dialog answered OK", null); r.confirm(); return true; }
+                log("BLOCKED alert dialog", null); r.cancel(); return true;
+            }
 
             @Override
-            public boolean onJsPrompt(WebView v, String url, String msg, String def, JsPromptResult r) { r.cancel(); return true; }
+            public boolean onJsConfirm(WebView v, String url, String msg, JsResult r) {
+                if (bare) return false;
+                if (Methods.on(Methods.DIALOGS)) { log("confirm dialog answered OK", null); r.confirm(); return true; }
+                r.cancel(); return true;
+            }
 
             @Override
-            public boolean onJsBeforeUnload(WebView v, String url, String msg, JsResult r) { r.cancel(); return true; }
+            public boolean onJsPrompt(WebView v, String url, String msg, String def, JsPromptResult r) {
+                if (bare) return false;
+                if (Methods.on(Methods.DIALOGS)) { r.confirm(def == null ? "" : def); return true; }
+                r.cancel(); return true;
+            }
+
+            @Override
+            public boolean onJsBeforeUnload(WebView v, String url, String msg, JsResult r) {
+                if (bare || Methods.on(Methods.DIALOGS)) { r.confirm(); return true; }
+                r.cancel(); return true;
+            }
         });
         return w;
     }

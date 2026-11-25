@@ -86,6 +86,12 @@ public class MainActivity extends Activity {
         root = new FrameLayout(this);
         root.setBackgroundColor(Color.BLACK);
         setContentView(root);
+        // Test methods (testing websites/README.md): only ./emulator.sh -N passes this extra.
+        Methods.set(getIntent() == null ? -1 : getIntent().getIntExtra("method", -1));
+        if (Methods.testing()) {
+            WebView.setWebContentsDebuggingEnabled(true);   // chrome://inspect on the Mac
+            Scraper.log("web engine: Chrome " + Scraper.webViewMajor(), null);
+        }
         Scraper.blockServiceWorkers();
         createWebView();
         reload();
@@ -321,13 +327,27 @@ public class MainActivity extends Activity {
         synchronized (scrapeLock) { // one website at a time
             result = Scraper.browse(this, root, url, site, new Scraper.Checker() {
                 public boolean accept(String src) {
-                    if (++tried[0] > 20) return false;
+                    if (++tried[0] > (Methods.on(Methods.SNIFF) ? 40 : 20)) return false;
                     try {
                         // Ask for the stream the way the video site's own player does.
                         Map<String, String> h = new HashMap<String, String>();
                         if (!Scraper.browserUa.isEmpty()) h.put("User-Agent", Scraper.browserUa);
-                        h.put("Referer", "https://" + host + "/");
-                        h.put("Origin", "https://" + host);
+                        String page = Methods.follow() && Scraper.lastMainHost != null ? Scraper.lastMainHost : host;
+                        h.put("Referer", "https://" + page + "/");
+                        h.put("Origin", "https://" + page);
+                        Map<String, String> seen = Scraper.seenHeaders.get(src);
+                        if (Methods.on(Methods.REAL_HEADERS) && seen != null) {   // test method 12
+                            for (Map.Entry<String, String> e : seen.entrySet()) {
+                                String k = e.getKey().toLowerCase(Locale.ROOT);
+                                if (k.equals("referer")) h.put("Referer", e.getValue());
+                                else if (k.equals("origin")) h.put("Origin", e.getValue());
+                                else if (k.equals("user-agent")) h.put("User-Agent", e.getValue());
+                            }
+                            if (!seen.keySet().toString().toLowerCase(Locale.ROOT).contains("origin")) h.remove("Origin");
+                            String ck = android.webkit.CookieManager.getInstance().getCookie(src);
+                            if (ck != null && !ck.isEmpty()) h.put("Cookie", ck);
+                            Scraper.log("using the website's own headers for the stream: " + h.keySet(), null);
+                        }
                         Net.Stream s = Net.inspect(src, h);
                         streamHeaders = h;
                         streamHosts.clear();

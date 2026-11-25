@@ -97,5 +97,7 @@ from a Mac (sandboxed Chromium). `./helper.sh diagnose tt0993846 [season episode
 why a title won't play on the TV and writes a report to `debug/output/` (git-ignored).
 `./helper.sh watch tt0993846 [season episode]` does the same in a browser window you can watch
 (each step, each click, and every video link found), and saves a screen recording there too.
+`./emulator.sh -N` tests fix method N on the virtual TV for a website that works in Chrome
+but not in the app (see `testing websites/README.md`; `./emulator.sh methods` lists them).
 `server.py` and `imdb.py` are leftovers from the old
 computer-based version and can be deleted.

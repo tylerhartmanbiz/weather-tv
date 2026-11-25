@@ -8,6 +8,9 @@
 #   ./emulator.sh logs       watch what the app does: video links found, popups/downloads/redirects blocked
 #   ./emulator.sh logs FILE  same, but save to FILE instead of the screen (e.g. debug/output/tv-log.txt)
 #   ./emulator.sh stop       turn the virtual TV off
+#   ./emulator.sh -N         test fix method N for websites that work in Chrome but not here
+#                            (e.g. ./emulator.sh -3). See testing websites/README.md
+#   ./emulator.sh methods    list the test methods
 #
 # Remote control = your keyboard, with the emulator window focused:
 #   arrow keys = D-pad   Enter = OK/select   Esc = Back   Cmd+M = Menu (reload)
@@ -43,17 +46,26 @@ setup() {
   fi
 }
 
+EMU_FLAGS=""   # extra emulator options (test methods); the running TV is restarted if they change
+FLAGS_FILE="$ANDROID_HOME/emulator-flags.txt"
+
 boot() {
-  # An older virtual TV (e.g. the Android 12 one) still running? Turn it off first.
-  if "$ADB" devices | grep -q '^emulator-' && [ "$("$ADB" emu avd name 2>/dev/null | head -1 | tr -d '\r')" != "$AVD" ]; then
-    echo "Turning off the old virtual TV..."
-    "$ADB" emu kill >/dev/null 2>&1 || true
-    while "$ADB" devices | grep -q '^emulator-'; do sleep 1; done
+  # An older virtual TV (e.g. the Android 12 one), or one started with other test options,
+  # still running? Turn it off first.
+  if "$ADB" devices | grep -q '^emulator-'; then
+    if [ "$("$ADB" emu avd name 2>/dev/null | head -1 | tr -d '\r')" != "$AVD" ] \
+       || [ "$(cat "$FLAGS_FILE" 2>/dev/null)" != "$EMU_FLAGS" ] || [[ "$EMU_FLAGS" == *-wipe-data* ]]; then
+      echo "Restarting the virtual TV${EMU_FLAGS:+ with: $EMU_FLAGS}..."
+      "$ADB" emu kill >/dev/null 2>&1 || true
+      while "$ADB" devices | grep -q '^emulator-'; do sleep 1; done
+    fi
   fi
   if ! "$ADB" devices | grep -q '^emulator-'; then
     echo "Starting the virtual TV (a window will open)..."
     # -no-snapshot: fresh start every time, nothing the website did is kept between runs.
-    nohup "$EMU" -avd "$AVD" -no-snapshot -no-boot-anim -netfast >"$ANDROID_HOME/emulator.log" 2>&1 &
+    # shellcheck disable=SC2086
+    nohup "$EMU" -avd "$AVD" -no-snapshot -no-boot-anim -netfast $EMU_FLAGS >"$ANDROID_HOME/emulator.log" 2>&1 &
+    echo "$EMU_FLAGS" > "$FLAGS_FILE"
   fi
   "$ADB" wait-for-device
   until [ "$("$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; do sleep 2; done
@@ -72,7 +84,83 @@ launch() {
   echo "Run ./emulator.sh logs in another terminal to watch what it does."
 }
 
+# ---------- test methods (testing websites/README.md) ----------
+TESTDIR="$ROOT/testing websites"
+
+list_methods() {  # the table in Methods.java is the one list of methods
+  sed -n 's/.*\/\* \([0-9]*\) \*\/ {.*, "\(.*\)"},.*/  -\1  \2/p' app/src/app/weathertv/Methods.java
+}
+
+build_test_apk() {  # build from this folder, only if the code changed since the last build
+  local sum; sum=$(find app/src app/res app/AndroidManifest.xml app/build.sh -type f -exec shasum {} + | shasum | cut -c1-40)
+  if [ ! -f app/build/weather-tv.apk ] || [ "$(cat app/build/.source-sum 2>/dev/null)" != "$sum" ]; then
+    echo "Building the test app from this folder..."
+    KEYSTORE="$ROOT/signing-key.p12" KEYSTORE_PASS="$(cat "$ROOT/signing-key-password.txt")" \
+      ANDROID_SDK="$ANDROID_HOME" bash app/build.sh >/dev/null
+    echo "$sum" > app/build/.source-sum
+  fi
+}
+
+# The video website's domain(s), read from your settings by this script, so the saved log can
+# say <site> instead (the log can then be shared, e.g. with Claude, without the address).
+site_domains() {
+  local f=docs/config-noclaude.json; [ -f "$f" ] || f=docs/config.json
+  python3 -I -c 'import re,sys
+t=open(sys.argv[1],encoding="utf-8",errors="ignore").read()
+for h in sorted({".".join(h.lower().split(".")[-2:]) for h in re.findall(r"https?://([A-Za-z0-9.-]+)",t)}):print(h)' "$f" 2>/dev/null \
+    | grep -vxE 'media-imdb\.com|imdb\.com|tvmaze\.com' || true
+}
+
+redact() {  # stdin -> stdout, every site domain (and its subdomains) becomes <site>
+  SITES="$(site_domains | tr '\n' ' ')" perl -pe 'BEGIN{$|=1; @s=split " ",$ENV{SITES}} for my $d (@s){s/(?:[a-z0-9-]+\.)*\Q$d\E/<site>/gi}'
+}
+
+run_method() {  # $1 = method number
+  local n=$1 desc
+  desc=$(list_methods | sed -n "s/^  -$n  //p")
+  [ -n "$desc" ] || { echo "There's no method $n. The methods are:"; list_methods; exit 1; }
+  local private_dns=no
+  case $n in
+    5) private_dns=yes ;;
+    6) EMU_FLAGS="-dns-server 1.1.1.1,8.8.8.8" ;;
+    26) EMU_FLAGS="-gpu host" ;;
+    27) EMU_FLAGS="-gpu swiftshader_indirect" ;;
+    28) EMU_FLAGS="-memory 4096" ;;
+    29) EMU_FLAGS="-wipe-data" ;;
+    33|34) EMU_FLAGS="-gpu host -memory 4096"; private_dns=yes ;;
+  esac
+  echo "=== Method $n: $desc ==="
+  setup; boot
+  [ "$EMU_FLAGS" = "-wipe-data" ] && echo "" > "$FLAGS_FILE"   # wipe once, not every run
+  if [ $private_dns = yes ]; then
+    "$ADB" shell settings put global private_dns_mode hostname
+    "$ADB" shell settings put global private_dns_specifier dns.google
+    echo "Encrypted DNS (dns.google) is on for the virtual TV."
+  else
+    "$ADB" shell settings put global private_dns_mode opportunistic
+  fi
+  build_test_apk
+  install_apk app/build/weather-tv.apk
+  "$ADB" shell pm clear app.weathertv >/dev/null    # start clean: no cookies/cache from the last method
+  "$ADB" shell am force-stop app.weathertv
+  "$ADB" logcat -c
+  "$ADB" shell am start -n app.weathertv/.MainActivity --ei method "$n" >/dev/null
+  mkdir -p "$TESTDIR/logs"
+  local log="$TESTDIR/logs/method-$n.txt"
+  echo
+  echo "The app is open in the emulator with method $n. Search a title, press Open, and try to"
+  echo "play the video on the website (arrows move the cursor, Enter = click, Esc = Back)."
+  echo "To see the website's own errors: open chrome://inspect in Chrome on this Mac (> inspect)."
+  echo "Watching what the app does below (also saved to testing websites/logs/method-$n.txt)."
+  echo "Press Ctrl+C when you're done, then say whether method $n worked."
+  echo
+  trap 'echo; echo "Saved: testing websites/logs/method-$n.txt"; exit 0' INT
+  "$ADB" logcat -v time VideoTV:I AndroidRuntime:E chromium:E '*:S' | redact | tee "$log"
+}
+
 case "${1:-}" in
+  -[0-9]|-[0-9][0-9]) run_method "${1#-}" ;;
+  methods) list_methods ;;
   ""|start)
     setup; boot
     tmp=$(mktemp -d)
@@ -99,5 +187,5 @@ case "${1:-}" in
     fi ;;
   stop)
     "$ADB" emu kill >/dev/null 2>&1 || true; echo "Virtual TV turned off." ;;
-  *) sed -n '2,16p' "$0" ;;
+  *) sed -n '2,19p' "$0" ;;
 esac

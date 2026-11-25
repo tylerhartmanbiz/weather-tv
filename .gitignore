@@ -8,3 +8,4 @@ signing-key-password.txt
 .venv/
 .android-sdk/
 debug/output/
+testing websites/logs/
