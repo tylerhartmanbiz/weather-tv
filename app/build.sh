@@ -6,7 +6,11 @@ cd "$(dirname "$0")"
 SDK=${ANDROID_SDK:?}; BT=$SDK/build-tools/35.0.0; JAR=$SDK/platforms/android-30/android.jar
 rm -rf build && mkdir -p build/classes build/dex
 $BT/aapt2 compile --dir res -o build/res.zip
-$BT/aapt2 link -o build/base.apk -I $JAR --manifest AndroidManifest.xml build/res.zip
+# A new, higher version number for every build (minutes since 1970), so TVs install it as an
+# update and refresh their cached copy of the app's icon/banner.
+VERSION_CODE=${VERSION_CODE:-$(( $(date +%s) / 60 ))}
+$BT/aapt2 link -o build/base.apk -I $JAR --manifest AndroidManifest.xml build/res.zip \
+  --version-code "$VERSION_CODE" --version-name "2.$VERSION_CODE" --replace-version
 javac -source 8 -target 8 -bootclasspath $JAR -d build/classes $(find src -name '*.java')
 (cd build/classes && jar cf ../classes.jar .)
 $BT/d8 --min-api 22 --lib $JAR --output build/dex build/classes.jar
