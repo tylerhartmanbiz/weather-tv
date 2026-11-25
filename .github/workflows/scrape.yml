@@ -1,8 +1,8 @@
 name: Scrape videos
-# Runs the scraper on GitHub's throwaway cloud machines, so weather.com is never
-# contacted from your computer or TV. Only the resulting JSON is committed.
+# Runs the scraper on GitHub's throwaway cloud machines. NOTE: weather.com currently
+# blocks GitHub's servers (HTTP 403), so this is manual-only; use ./run_scraper.sh --push
+# locally instead. Kept for sites that don't block cloud IPs.
 on:
-  schedule: [{ cron: "17 * * * *" }] # hourly
   workflow_dispatch:
 permissions:
   contents: write

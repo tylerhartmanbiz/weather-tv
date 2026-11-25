@@ -17,17 +17,18 @@ The APK is a thin shell that opens `docs/index.html` from GitHub Pages
 shows the change on next launch (or press **Menu ☰** on the remote to reload). Pages can take
 ~1–10 minutes to update.
 
-Video info lives in `docs/videos.json`, refreshed hourly by the **Scrape videos** GitHub Action.
+Video info lives in `docs/videos.json`. To refresh it run `./run_scraper.sh --push` (sandboxed,
+see below). weather.com blocks GitHub's cloud servers, so the cloud **Scrape videos** action is manual-only.
 You only need a new APK if something under `app/` changes (the Build APK action builds it).
 
 ## Safety
 
 weather.com is treated as untrusted:
 
-- **Scraping runs in the cloud.** `scrapper.py` runs on GitHub's throwaway machines. It uses
+- **The scraper is minimal.** `scrapper.py` uses
   only the Python standard library, reads the page as text in memory, never executes or saves
   anything from the site, caps the size, and keeps only `https` `.m3u8` links on allowlisted hosts.
-- **Running it locally?** Use `./run_scraper.sh`: a macOS sandbox where it can write only
+- **It runs in a sandbox.** `./run_scraper.sh` is a macOS sandbox where it can write only
   `docs/videos.json` and cannot launch other programs.
 - **The TV never opens weather.com.** It streams the video (not downloaded to storage). The
   WebView only connects to 4 https hosts (the app page, the pinned + integrity-checked player

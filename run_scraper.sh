@@ -15,3 +15,9 @@ sandbox-exec -p "(version 1)
 (deny process-exec)
 (allow process-exec (subpath \"$PYPREFIX\") (literal \"$PYBIN\"))" \
   python3 -I -B scrapper.py "$OUT"
+
+# ./run_scraper.sh --push  → also publish the new videos.json (git runs outside the sandbox
+# and only ever commits this one JSON file).
+if [ "${1:-}" = "--push" ] && ! git diff --quiet docs/videos.json; then
+  git commit -q -m "Update videos.json" docs/videos.json && git push -q && echo "pushed; TV updates in a few minutes"
+fi
