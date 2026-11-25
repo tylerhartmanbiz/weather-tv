@@ -1,0 +1,29 @@
+name: Build APK
+on:
+  push:
+    branches: [main]
+    paths: ["app/**", ".github/workflows/build-apk.yml"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+      - name: Install SDK parts
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-30" "build-tools;35.0.0" > /dev/null
+      - name: Build
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.p12"
+          ANDROID_SDK=$ANDROID_HOME KEYSTORE=$RUNNER_TEMP/release.p12 bash app/build.sh
+      - name: Publish to the "apk" release
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          gh release view apk >/dev/null 2>&1 || gh release create apk --title "Weather TV app" --notes "Install with the Downloader app on Fire TV."
+          gh release upload apk app/build/weather-tv.apk --clobber

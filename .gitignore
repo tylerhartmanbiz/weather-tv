@@ -1,0 +1,6 @@
+app/build/
+*.p12
+*.keystore
+__pycache__/
+.DS_Store
+signing-key-password.txt

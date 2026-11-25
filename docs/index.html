@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Only our own files, the pinned player library, and the allowlisted video/image hosts may load. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'unsafe-inline'; connect-src 'self' https://v.w-x.co; media-src https://v.w-x.co blob:; img-src https://s.w-x.co; worker-src blob:">
+<title>Weather TV</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; color: #fff; font-family: system-ui, sans-serif; overflow: hidden; }
+  video { position: fixed; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+  #info { position: fixed; left: 0; right: 0; bottom: 0; padding: 48px 64px 40px;
+          background: linear-gradient(transparent, rgba(0,0,0,.85)); transition: opacity .6s; }
+  #info.hide { opacity: 0; }
+  #title { font-size: 34px; font-weight: 700; margin: 0 0 8px; }
+  #desc { font-size: 20px; opacity: .85; margin: 0 0 12px; max-width: 70ch; }
+  #meta { font-size: 16px; opacity: .6; }
+  #msg { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 24px; }
+</style>
+</head>
+<body>
+<video id="v" autoplay playsinline></video>
+<div id="msg">Loading…</div>
+<div id="info" class="hide"><p id="title"></p><p id="desc"></p><div id="meta"></div></div>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.7.4/dist/hls.min.js"
+        integrity="sha384-p9vgU/7IYJWd3I4STrtqxqR/2cAQlhIX7D/HrTnIMEjjcUox165b7se7sxmm3zDg"
+        crossorigin="anonymous"></script>
+<script>
+const video = document.getElementById('v');
+const info = document.getElementById('info');
+const msg = document.getElementById('msg');
+let videos = [], index = 0, hls = null, hideTimer = null;
+
+function showInfo() {
+  info.classList.remove('hide');
+  clearTimeout(hideTimer);
+  hideTimer = setTimeout(() => info.classList.add('hide'), 6000);
+}
+
+function play(i) {
+  index = (i + videos.length) % videos.length;
+  const item = videos[index];
+  document.getElementById('title').textContent = item.title;
+  document.getElementById('desc').textContent = item.description;
+  document.getElementById('meta').textContent =
+    `${index + 1} / ${videos.length}  ·  ◀ ▶ change video  ·  OK pause/play`;
+  if (item.thumbnail) video.poster = item.thumbnail;
+  if (hls) { hls.destroy(); hls = null; }
+  if (window.Hls && Hls.isSupported()) {
+    hls = new Hls();
+    hls.loadSource(item.src);
+    hls.attachMedia(video);
+  } else {
+    video.src = item.src; // native HLS
+  }
+  video.play().catch(() => {});
+  showInfo();
+}
+
+video.addEventListener('playing', () => { msg.style.display = 'none'; });
+video.addEventListener('ended', () => play(index + 1));
+
+document.addEventListener('keydown', e => {
+  if (!videos.length) return;
+  if (e.key === 'ArrowRight') play(index + 1);
+  else if (e.key === 'ArrowLeft') play(index - 1);
+  else if (e.key === 'Enter' || e.key === ' ' || e.key === 'MediaPlayPause') video.paused ? video.play() : video.pause();
+  else { showInfo(); return; }
+  e.preventDefault();
+});
+
+fetch('videos.json?t=' + Date.now(), { cache: 'no-store' })
+  .then(r => r.json())
+  .then(d => {
+    // Only accept https video URLs on the allowlisted host (the scraper checks this too).
+    videos = (d.videos || []).filter(v => /^https:\/\/v\.w-x\.co\/.+\.m3u8$/.test(v.src));
+    if (!videos.length) throw new Error('no videos');
+    play(0);
+  })
+  .catch(() => { msg.textContent = 'Could not load videos.'; });
+</script>
+</body>
+</html>

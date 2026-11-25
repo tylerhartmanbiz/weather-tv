@@ -1,0 +1,23 @@
+name: Scrape videos
+# Runs the scraper on GitHub's throwaway cloud machines, so weather.com is never
+# contacted from your computer or TV. Only the resulting JSON is committed.
+on:
+  schedule: [{ cron: "17 * * * *" }] # hourly
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: python -I -B scrapper.py docs/videos.json
+      - name: Commit if changed
+        run: |
+          git diff --quiet docs/videos.json && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898299+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Update videos.json" && git push
