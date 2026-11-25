@@ -3,11 +3,16 @@ package app.weathertv;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.graphics.Bitmap;
+import android.graphics.Canvas;
+import android.graphics.Color;
+import android.graphics.Paint;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Message;
 import android.os.SystemClock;
 import android.util.Log;
+import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.webkit.CookieManager;
@@ -28,24 +33,25 @@ import android.webkit.WebStorage;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
+import android.widget.TextView;
 
 import java.io.ByteArrayInputStream;
-import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.json.JSONArray;
 
 /**
- * Opens the video website in a hidden, locked-down WebView on the TV, just long enough to
- * learn the address of its video stream, then wipes and destroys it.
+ * Shows the video website on the TV in a locked-down WebView that YOU use with the remote
+ * (an on-screen cursor: arrows move, OK clicks, Back cancels). Nothing is clicked for you.
+ * As soon as the site asks for its video stream, the link is checked; the first one that's
+ * safe closes the website (wiped and destroyed) and plays in the app's own player.
  *
  * Treats the site as hostile:
  *  * Runs in Android's sandboxed WebView renderer process. No JavaScript bridge into the
@@ -58,10 +64,10 @@ import org.json.JSONArray;
  *  * Every request must be https to a public hostname that resolves to public internet
  *    addresses: nothing on your home network can be reached. Video players embedded from
  *    another site may load (they stay inside this same sandbox).
- *  * Video bytes are never downloaded: video/playlist requests are noted and cancelled, and
- *    media segments, images and fonts are cancelled too.
+ *  * Video bytes are never downloaded by the website: video/playlist requests are noted and
+ *    cancelled, and media segments are cancelled too.
  *  * Afterwards its cookies, storage and cache are cleared and it is destroyed.
- *  * If the page crashes its renderer, only this hidden WebView is thrown away.
+ *  * If the page crashes its renderer, only this WebView is thrown away.
  */
 final class Scraper {
     private Scraper() { }
@@ -74,8 +80,7 @@ final class Scraper {
 
     private static final String[] VIDEO_EXT = {".m3u8", ".mp4"};
     private static final String[] BLOCK_EXT = {".ts", ".m4s", ".m4a", ".m4v", ".aac", ".cmfv", ".cmfa", ".mp3",
-            ".webm", ".mkv", ".mov", ".avi", ".flv", ".vtt", ".srt", ".apk", ".exe", ".zip", ".dmg", ".bin",
-            ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".woff", ".woff2", ".ttf", ".otf"};
+            ".webm", ".mkv", ".mov", ".avi", ".flv", ".vtt", ".srt", ".apk", ".exe", ".zip", ".dmg", ".bin"};
 
     private static final String SCAN_JS = "(function(){var o=[];try{"
             + "document.querySelectorAll('video,source').forEach(function(e){var s=e.currentSrc||e.src;if(s)o.push(s)});"
@@ -83,8 +88,6 @@ final class Scraper {
             + "var re=/https:\\/\\/[^\"'\\s<>\\\\]+?\\.(?:m3u8|mp4)(?:\\?[^\"'\\s<>\\\\]*)?/gi,m;"
             + "while((m=re.exec(h))&&o.length<50)o.push(m[0]);"
             + "}catch(x){}return o})()";
-    private static final String PLAY_JS = "(function(){try{document.querySelectorAll('video').forEach(function(v){"
-            + "v.muted=true;var p=v.play();if(p&&p.catch)p.catch(function(){})})}catch(x){}})()";
 
     static boolean endsWithAny(String path, String[] ext) {
         for (String e : ext) if (path.endsWith(e)) return true;
@@ -108,117 +111,200 @@ final class Scraper {
         });
     }
 
+    /** Decides whether a found video link is the one to play (runs on a background thread). */
+    interface Checker { boolean accept(String src); }
+
+    /** The website currently on screen, if any. Only touched on the UI thread (except `ended`). */
+    private static final class Session {
+        WebView web;
+        CursorView cursor;
+        TextView hint;
+        volatile String ended;   // null while open; then "cancelled" or "crashed"
+    }
+
+    private static Session current;
+
     /**
-     * Load url (must be on `site`) hidden inside root, wait for its video stream, and return
-     * every candidate video address found (HLS first). Call from a background thread.
+     * Show url (must be on `site`) full screen for you to use with the remote, and return once
+     * `checker` accepted a video link the site asked for ("ok"), or you pressed Back
+     * ("cancelled"), the site crashed ("crashed"), or 15 minutes passed ("timeout").
+     * Call from a background thread.
      */
-    static List<String> scrape(final Activity act, final FrameLayout root, final String url, final String site)
-            throws InterruptedException {
+    static String browse(final Activity act, final FrameLayout root, final String url, final String site,
+                         Checker checker) throws InterruptedException {
         final Set<String> found = Collections.synchronizedSet(new LinkedHashSet<String>());
-        final CountDownLatch loaded = new CountDownLatch(1);
-        final AtomicBoolean crashed = new AtomicBoolean(false);
-        final WebView[] holder = new WebView[1];
+        final LinkedBlockingQueue<String> queue = new LinkedBlockingQueue<String>();
+        final Session s = new Session();
+        final CountDownLatch shown = new CountDownLatch(1);
 
         act.runOnUiThread(new Runnable() { public void run() {
-            WebView w = build(act, root, holder, site, url, found, loaded, crashed);
-            holder[0] = w;
-            // Hidden: underneath the app's own (opaque) WebView, never focused.
-            root.addView(w, 0, new FrameLayout.LayoutParams(1280, 720));
-            log("sandbox opened", url);
-            w.loadUrl(url);
+            s.web = build(act, root, s, site, url, found, queue);
+            FrameLayout.LayoutParams full = new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT);
+            root.addView(s.web, full);
+            s.cursor = new CursorView(act);
+            root.addView(s.cursor, new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+            s.hint = new TextView(act);
+            s.hint.setTextColor(Color.WHITE);
+            s.hint.setTextSize(17);
+            s.hint.setBackgroundColor(0xCC000000);
+            s.hint.setPadding(30, 14, 30, 14);
+            FrameLayout.LayoutParams bottom = new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+            bottom.bottomMargin = 30;
+            root.addView(s.hint, bottom);
+            hint(s, "Start the video on the website.   Move: \u25C0 \u25B2 \u25BC \u25B6   Click: OK   Cancel: Back");
+            current = s;
+            log("website shown", url);
+            s.web.loadUrl(url);
+            shown.countDown();
         }});
+        shown.await(5, TimeUnit.SECONDS);
 
-        // Exactly like a person: wait for the page to load, click the middle of the screen,
-        // wait 5 s, click the middle again, wait 10 s. Look for the video after every step and
-        // stop as soon as it's found. Popups / other sites the clicks try to open are refused.
-        // (The page's network requests are watched the whole time, see shouldInterceptRequest.)
-        loaded.await(10, TimeUnit.SECONDS);
-        if (!lookFor(act, holder, found, "after loading")) {
-            click(act, holder, 1);
-            if (!lookFor(act, holder, found, "after click 1")
-                    && !(waitForVideo(found, crashed, 5000) | lookFor(act, holder, found, "5 s after click 1"))) {
-                click(act, holder, 2);
-                if (!lookFor(act, holder, found, "after click 2")
-                        && !(waitForVideo(found, crashed, 10000) | lookFor(act, holder, found, "10 s after click 2"))) {
-                    log("NO VIDEO FOUND after loading, 2 clicks and 15 s", null);
-                }
+        String result = "timeout";
+        long end = SystemClock.uptimeMillis() + 15 * 60 * 1000L;
+        int tick = 0;
+        while (SystemClock.uptimeMillis() < end) {
+            if (s.ended != null) { result = s.ended; break; }
+            String src = queue.poll(1, TimeUnit.SECONDS);
+            if (src == null) {
+                if (++tick % 2 == 0) scanPage(act, s, found, queue);   // links written in the page
+                continue;
             }
+            setHint(act, s, "Video found, checking it\u2026");
+            if (checker.accept(src)) { result = "ok"; break; }
+            setHint(act, s, "That video link can't be played safely. Keep trying, or Back to cancel.");
         }
-        if (!found.isEmpty()) Thread.sleep(1500); // let the player finish asking for its playlists
+        log("website closed (" + result + ")", null);
 
         final CountDownLatch gone = new CountDownLatch(1);
         act.runOnUiThread(new Runnable() { public void run() {
-            destroy(root, holder[0], true);
-            holder[0] = null;
+            if (current == s) current = null;
+            root.removeView(s.cursor);
+            root.removeView(s.hint);
+            destroy(root, s.web, !"crashed".equals(s.ended));
+            s.web = null;
             gone.countDown();
         }});
         gone.await(5, TimeUnit.SECONDS);
-        log("sandbox wiped and destroyed", null);
+        log("website wiped and destroyed", null);
+        return result;
+    }
 
-        List<String> out = new ArrayList<String>();
-        synchronized (found) {
-            for (String s : found) if (s.toLowerCase(Locale.ROOT).contains(".m3u8")) out.add(s);
-            for (String s : found) if (!out.contains(s)) out.add(s);
+    /** Remote keys while the website is on screen (UI thread). True = handled here. */
+    static boolean handleKey(KeyEvent e) {
+        Session s = current;
+        if (s == null || s.web == null || s.ended != null) return false;
+        int code = e.getKeyCode();
+        boolean down = e.getAction() == KeyEvent.ACTION_DOWN;
+        float step = 14 + Math.min(e.getRepeatCount() * 8, 60);   // faster while held
+        CursorView c = s.cursor;
+        switch (code) {
+            case KeyEvent.KEYCODE_DPAD_LEFT:  if (down) move(s, -step, 0); return true;
+            case KeyEvent.KEYCODE_DPAD_RIGHT: if (down) move(s, step, 0); return true;
+            case KeyEvent.KEYCODE_DPAD_UP:    if (down) move(s, 0, -step); return true;
+            case KeyEvent.KEYCODE_DPAD_DOWN:  if (down) move(s, 0, step); return true;
+            case KeyEvent.KEYCODE_DPAD_CENTER:
+            case KeyEvent.KEYCODE_ENTER:
+            case KeyEvent.KEYCODE_NUMPAD_ENTER:
+            case KeyEvent.KEYCODE_BUTTON_A:
+                if (down && e.getRepeatCount() == 0) tap(s.web, c.x, c.y);
+                return true;
+            case KeyEvent.KEYCODE_BACK:
+            case KeyEvent.KEYCODE_ESCAPE:
+                if (!down) { s.ended = "cancelled"; hint(s, "Closing\u2026"); }
+                return true;
+            default:
+                return true;   // nothing else reaches the app while the website is shown
         }
-        return out;
     }
 
-    /** Wait until a video link is found (true), the time is up, or the sandbox crashed. */
-    private static boolean waitForVideo(Set<String> found, AtomicBoolean crashed, long ms) throws InterruptedException {
-        long end = SystemClock.uptimeMillis() + ms;
-        while (SystemClock.uptimeMillis() < end && !crashed.get() && found.isEmpty()) Thread.sleep(200);
-        return !found.isEmpty();
+    /** Move the cursor; pushing past an edge scrolls the page instead. */
+    private static void move(Session s, float dx, float dy) {
+        CursorView c = s.cursor;
+        float w = c.getWidth(), h = c.getHeight(), m = 8;
+        float nx = c.x + dx, ny = c.y + dy;
+        int sx = 0, sy = 0;
+        if (nx < m) { sx = (int) (nx - m); nx = m; }
+        if (nx > w - m) { sx = (int) (nx - (w - m)); nx = w - m; }
+        if (ny < m) { sy = (int) (ny - m); ny = m; }
+        if (ny > h - m) { sy = (int) (ny - (h - m)); ny = h - m; }
+        c.moveTo(nx, ny);
+        if (sx != 0 || sy != 0) {
+            float d = s.web.getResources().getDisplayMetrics().density;
+            s.web.evaluateJavascript("window.scrollBy(" + Math.round(sx * 3 / d) + "," + Math.round(sy * 3 / d) + ")", null);
+        }
     }
 
-    /** Search for the video now: links the page already asked for, plus links in its HTML. */
-    private static boolean lookFor(final Activity act, final WebView[] holder, final Set<String> found, String when)
-            throws InterruptedException {
-        final CountDownLatch scanned = new CountDownLatch(1);
+    /** A real tap at (x, y) on the website, exactly like touching the screen there. */
+    private static void tap(WebView w, float x, float y) {
+        long t = SystemClock.uptimeMillis();
+        MotionEvent down = MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, x, y, 0);
+        MotionEvent up = MotionEvent.obtain(t, t + 60, MotionEvent.ACTION_UP, x, y, 0);
+        w.dispatchTouchEvent(down);
+        w.dispatchTouchEvent(up);
+        down.recycle();
+        up.recycle();
+    }
+
+    private static void hint(Session s, String text) {
+        if (s.hint != null) s.hint.setText(text);
+    }
+
+    private static void setHint(Activity act, final Session s, final String text) {
+        act.runOnUiThread(new Runnable() { public void run() { hint(s, text); } });
+    }
+
+    /** Also look for video links written in the page itself (async). */
+    private static void scanPage(Activity act, final Session s, final Set<String> found,
+                                 final LinkedBlockingQueue<String> queue) {
         act.runOnUiThread(new Runnable() { public void run() {
-            WebView w = holder[0];
-            if (w == null) { scanned.countDown(); return; }
-            w.evaluateJavascript(SCAN_JS, new ValueCallback<String>() {
+            if (s.web == null || s.ended != null) return;
+            s.web.evaluateJavascript(SCAN_JS, new ValueCallback<String>() {
                 public void onReceiveValue(String v) {
                     try {
                         JSONArray a = new JSONArray(v);
                         for (int i = 0; i < a.length() && i < 50; i++) {
-                            String s = a.optString(i, "");
-                            String path = Uri.parse(s).getPath();
-                            if (s.startsWith("https://") && path != null && found.size() < 50
-                                    && endsWithAny(path.toLowerCase(Locale.ROOT), VIDEO_EXT)
-                                    && found.add(s)) log("video link found in the page", s);
+                            String u = a.optString(i, "");
+                            String path = Uri.parse(u).getPath();
+                            if (u.startsWith("https://") && path != null && found.size() < 50
+                                    && endsWithAny(path.toLowerCase(Locale.ROOT), VIDEO_EXT) && found.add(u)) {
+                                log("video link found in the page", u);
+                                queue.offer(u);
+                            }
                         }
                     } catch (Exception ignored) { }
-                    scanned.countDown();
                 }
             });
         }});
-        scanned.await(3, TimeUnit.SECONDS);
-        boolean got = !found.isEmpty();
-        log("looked for the video " + when + ": " + (got ? found.size() + " link(s)" : "none yet"), null);
-        return got;
     }
 
-    /** Tap the middle of the screen, then ask the page's videos to play. */
-    private static void click(final Activity act, final WebView[] holder, final int n) throws InterruptedException {
-        final CountDownLatch done = new CountDownLatch(1);
-        act.runOnUiThread(new Runnable() { public void run() {
-            WebView w = holder[0];
-            if (w != null) {
-                log("click " + n + " in the middle of the screen", null);
-                long t = SystemClock.uptimeMillis();
-                float x = w.getWidth() / 2f, y = w.getHeight() / 2f;
-                MotionEvent down = MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, x, y, 0);
-                MotionEvent up = MotionEvent.obtain(t, t + 80, MotionEvent.ACTION_UP, x, y, 0);
-                w.dispatchTouchEvent(down);
-                w.dispatchTouchEvent(up);
-                down.recycle();
-                up.recycle();
-                w.evaluateJavascript(PLAY_JS, null);
-            }
-            done.countDown();
-        }});
-        done.await(3, TimeUnit.SECONDS);
+    /** The on-screen pointer. */
+    private static final class CursorView extends View {
+        float x = -1, y = -1;
+        private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG), ring = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        CursorView(Activity a) {
+            super(a);
+            fill.setColor(0xEEFFFFFF);
+            ring.setColor(0xFF000000);
+            ring.setStyle(Paint.Style.STROKE);
+            ring.setStrokeWidth(4);
+            setFocusable(false);
+            setClickable(false);
+        }
+
+        void moveTo(float nx, float ny) { x = nx; y = ny; invalidate(); }
+
+        @Override
+        protected void onDraw(Canvas c) {
+            if (x < 0) { x = getWidth() / 2f; y = getHeight() / 2f; }
+            float r = 14 * getResources().getDisplayMetrics().density / 2f + 6;
+            c.drawCircle(x, y, r, fill);
+            c.drawCircle(x, y, r, ring);
+        }
     }
 
     private static void destroy(FrameLayout root, WebView w, boolean alive) {
@@ -242,9 +328,9 @@ final class Scraper {
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    private static WebView build(Activity act, final FrameLayout root, final WebView[] holder, final String site,
-                                 final String startUrl, final Set<String> found, final CountDownLatch loaded,
-                                 final AtomicBoolean crashed) {
+    private static WebView build(Activity act, final FrameLayout root, final Session session, final String site,
+                                 final String startUrl, final Set<String> found,
+                                 final LinkedBlockingQueue<String> queue) {
         final AtomicInteger sentBack = new AtomicInteger(0);
         final WebView w = new WebView(act);
         w.setFocusable(false);
@@ -265,7 +351,6 @@ final class Scraper {
         s.setGeolocationEnabled(false);
         s.setSaveFormData(false);
         s.setCacheMode(WebSettings.LOAD_NO_CACHE);
-        s.setBlockNetworkImage(true);
         if (Build.VERSION.SDK_INT >= 26) s.setSafeBrowsingEnabled(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(w, false);
 
@@ -301,7 +386,10 @@ final class Scraper {
                 }
                 String path = u.getPath() == null ? "" : u.getPath().toLowerCase(Locale.ROOT);
                 if (endsWithAny(path, VIDEO_EXT)) {         // the prize: note it, don't download it
-                    if (found.size() < 50 && found.add(u.toString())) log("video link found (not downloaded)", u.toString());
+                    if (found.size() < 50 && found.add(u.toString())) {
+                        log("video link found (not downloaded)", u.toString());
+                        queue.offer(u.toString());
+                    }
                     return blocked();
                 }
                 if (endsWithAny(path, BLOCK_EXT)) return blocked();
@@ -316,10 +404,9 @@ final class Scraper {
             public boolean onRenderProcessGone(WebView v, RenderProcessGoneDetail d) {
                 // The page crashed its sandbox: throw this WebView away (it must not be used
                 // again), keep the app running.
-                log("sandbox crashed; discarded", null);
-                if (holder[0] == v) holder[0] = null;
-                destroy(root, v, false);
-                crashed.set(true);
+                log("website crashed; discarded", null);
+                session.ended = "crashed";
+                root.removeView(v);
                 return true;
             }
 
@@ -340,10 +427,6 @@ final class Scraper {
                 }
             }
 
-            @Override
-            public void onPageFinished(WebView v, String u) {
-                if (u != null && !u.startsWith("about:")) loaded.countDown();
-            }
         });
 
         w.setWebChromeClient(new WebChromeClient() {

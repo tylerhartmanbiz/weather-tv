@@ -16,6 +16,10 @@ same four steps the TV takes:
   3. ALLOW  is the stream all https, on public addresses, on few enough hosts?
   4. PLAY   will the stream servers let the app's player (on github.io) read it?
 
+Note: on the TV you now start the video yourself (the site is shown, you use it with the
+remote). This tool still clicks by itself to find the link, so a site that detects automated
+browsers may refuse it; then test on the TV / emulator instead.
+
 When a step fails, it tries alternatives to find out why (other user-agent, Referer, a
 second click, waiting longer, links without .m3u8/.mp4 in their name, players in iframes).
 
@@ -482,13 +486,15 @@ def visit(url, ua, watch=False, video_dir=None):
             return found()
 
         try:
+            opened_at = time.time()
             try:
                 first = page.goto(url, wait_until="commit", timeout=20000)
                 ev["main_status"] = first.status if first else None
             except Exception as e:
                 ev["main_error"] = str(e).splitlines()[0][:200]
-            # The TV: wait for the page to load (max 10 s), click the middle, wait 5 s, click the
+            # Wait for the page to load (at least 10 s), click the middle, wait 5 s, click the
             # middle again, wait 10 s. Look after every step; stop as soon as a video is found.
+            # (The TV no longer clicks by itself: there YOU use the site with the remote.)
             say("Waiting for the page to load (max 10 s)…")
             try:
                 page.wait_for_load_state("load", timeout=10000)
@@ -525,6 +531,11 @@ def visit(url, ua, watch=False, video_dir=None):
                         "<p>The tool stops here (the TV would fail here too). Press Enter in the terminal.</p></body>")
                     input("\nThe page didn't load: the browser window says why. Press Enter to finish the report... ")
                 raise _Stop()
+            # Give the page at least 10 s (from opening it) to load before the first click.
+            left = 10 - (time.time() - opened_at)
+            if left > 0:
+                say("Letting the page load: first click after 10 s…")
+                wait(left, found)
             if ev["text_len"] < 20 and not page.frames[1:]:
                 feed.append(f"{now()}s the page looks EMPTY")
             if not look("after loading"):
@@ -535,8 +546,8 @@ def visit(url, ua, watch=False, video_dir=None):
                     click(2)
                     if not look("after click 2") and not (say("Waiting 10 s after click 2…") or wait(10, found)
                                                            or look("10 s after click 2")):
-                        ev["steps"].append(f"{now():5}s NO VIDEO FOUND: the TV shows its error here")
-                        say("NO VIDEO FOUND: here the TV gives up and shows its error")
+                        ev["steps"].append(f"{now():5}s NO VIDEO FOUND after 2 clicks")
+                        say("NO VIDEO FOUND after 2 clicks")
                         overlay(mood="bad")
                         wait(3 if watch else 0)
             else:
@@ -615,8 +626,9 @@ CAUSES = {
     "PAGE_EMPTY": "The page loaded but is empty (no text, no embedded player). Some sites show nothing to "
                   "the Fire TV's browser: try again with --ua desktop to compare.",
     "PAGE_HTTP_ERROR": "The video page answered with an error code (see DETAILS, step 1).",
-    "PAGE_BOT_CHECK": "The site showed a bot check / captcha / 'access denied' page instead of the "
-                      "player. The TV can't get past those.",
+    "PAGE_BOT_CHECK": "The site showed a bot check / captcha / 'access denied' page to this automated "
+                      "browser. On the TV you use the site yourself, so try it there "
+                      "(./emulator.sh local, or the Fire TV).",
     "REDIRECT_OTHER_SITE": "The site sends the browser to a different website, which the TV blocks. "
                            "If that's the site's new address, use it in config-noclaude.json (the "
                            "address is in DETAILS, step 1, or shown in the watch window).",
@@ -717,7 +729,7 @@ def main():
                f"ended up on the video site: {ev.get('final_on_site')}   page text: {ev.get('text_len')} chars"
                f"   page HTML: {ev.get('html_len')} chars",
                f"popups refused: {ev['popups']} ({ev['popups_after_click']} after clicking)",
-               "what happened, step by step (like the TV):", *[f"    {x}" for x in ev["steps"]],
+               "what happened, step by step:", *[f"    {x}" for x in ev["steps"]],
                f"plain-http requests blocked: {ev['blocked_http']}",
                f"embedded frames ({len(ev['frames'])}):", *[f"    {f}" for f in ev["frames"]],
                "main page tried to go to another site (blocked, like the TV: it stays on the video site):",
@@ -748,7 +760,7 @@ def main():
         # ---- 2. find
         tv_links = [u for _, u in tv_found]
         tv_links += [u for u in ev["dom_main"] if u not in [x for _, x in tv_found]]
-        detail("== 2. find: video links the TV would notice (after loading, 2 clicks, 5 s + 10 s)",
+        detail("== 2. find: video links the TV would notice (10 s to load, 2 clicks, 5 s + 10 s)",
                *[f"    {t:5}s {u}" for t, u in tv_found] or ["    none from network"],
                "  in the main page's HTML:", *[f"    {u}" for u in ev["dom_main"]] or ["    none"],
                "  -- links the TV would MISS --",

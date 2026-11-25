@@ -495,7 +495,7 @@ async function openVideo() {
   const token = ++openToken;
   stopVideo();
   $('ltitle').textContent = t.label;
-  loader('Finding the video… (up to 30 seconds)', null);
+  loader('Opening the website: start the video there (◀▲▼▶ move, OK click, Back cancel)…', null);
   show('loader');
   let d;
   try { d = await openStream(t, pick.season, pick.episode); }

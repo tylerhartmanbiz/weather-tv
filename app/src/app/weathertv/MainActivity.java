@@ -44,8 +44,8 @@ import org.json.JSONObject;
  *
  * The page asks this shell for two things (same-origin URLs it intercepts):
  *   api/fetch?url=...[&post=json]   read JSON from an approved data host (IMDb), as text
- *   api/open?url=...                open the video site hidden + sandboxed (Scraper) and
- *                                   return its checked video stream link
+ *   api/open?url=...                show the video site (sandboxed, Scraper) for you to
+ *                                   start the video; return its checked video stream link
  *
  * Safety: the app's own WebView only talks https to this app page, the pinned player
  * library, IMDb/TVmaze image hosts, and the video hosts a checked stream needs. Everything else is
@@ -246,42 +246,55 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** Open the video site hidden + sandboxed, then check the stream it uses. */
+    /**
+     * Show the video site (sandboxed) for you to use with the remote. The first video link it
+     * asks for that passes the safety check closes it and is returned to the page to play.
+     */
     private JSONObject open(String url) throws Exception {
         String host = Net.checkUrl(url == null ? "" : url);
         String site = Net.siteOf(host);
         if (!openSites.contains(site)) throw new Exception("site not in config.json");
-        JSONObject out = new JSONObject();
-        List<String> candidates;
-        synchronized (scrapeLock) { // one hidden browser at a time
-            candidates = Scraper.scrape(this, root, url, site);
+        final JSONObject out = new JSONObject();
+        final int[] tried = {0};
+        String result;
+        synchronized (scrapeLock) { // one website at a time
+            result = Scraper.browse(this, root, url, site, new Scraper.Checker() {
+                public boolean accept(String src) {
+                    if (++tried[0] > 20) return false;
+                    try {
+                        Net.Stream s = Net.inspect(src);
+                        allowedHosts.addAll(s.hosts); // the player may now stream from exactly these hosts
+                        Scraper.log("PLAYING " + (s.quality.isEmpty() ? "" : s.quality + " ") + "from hosts " + s.hosts, src);
+                        JSONObject v = new JSONObject();
+                        v.put("src", src);
+                        v.put("quality", s.quality);
+                        out.put("videos", new JSONArray().put(v));
+                        out.put("allowedHosts", new JSONArray(s.hosts));
+                        return true;
+                    } catch (Exception e) {
+                        Scraper.log("rejected (" + e.getMessage() + ")", src); // unsafe or not a real stream
+                        return false;
+                    }
+                }
+            });
         }
-        Scraper.log(candidates.size() + " video link(s) to check", null);
-        int tried = 0;
-        for (String src : candidates) {
-            if (++tried > 8) break;
-            try {
-                Net.Stream s = Net.inspect(src);
-                allowedHosts.addAll(s.hosts); // the player may now stream from exactly these hosts
-                Scraper.log("PLAYING " + (s.quality.isEmpty() ? "" : s.quality + " ") + "from hosts " + s.hosts, src);
-                JSONObject v = new JSONObject();
-                v.put("src", src);
-                v.put("quality", s.quality);
-                out.put("videos", new JSONArray().put(v));
-                out.put("allowedHosts", new JSONArray(s.hosts));
-                return out;
-            } catch (Exception e) {
-                Scraper.log("rejected (" + e.getMessage() + ")", src); // unsafe or not a real stream: try the next
-            }
-        }
+        if (out.has("videos")) return out;
         out.put("videos", new JSONArray());
-        out.put("error", candidates.isEmpty()
-                ? "No video found on the page (looked after loading, after 2 clicks, and for 15 seconds)."
-                : "Found " + candidates.size() + " video link(s), but none passed the safety check.");
+        out.put("error", "cancelled".equals(result) ? "Cancelled."
+                : "crashed".equals(result) ? "The website crashed. Try again."
+                : tried[0] > 0 ? "The website's video couldn't be played safely."
+                : "No video was started on the website.");
         return out;
     }
 
     // ---------- remote ----------
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent e) {
+        // While the video website is on screen, the remote drives its cursor (Scraper).
+        if (Scraper.handleKey(e)) return true;
+        return super.dispatchKeyEvent(e);
+    }
 
     @Override
     public boolean onKeyDown(int code, KeyEvent e) {

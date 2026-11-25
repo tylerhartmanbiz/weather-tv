@@ -34,9 +34,10 @@ everything in `docs/` is public on GitHub Pages, because that's where the TV dow
 1. Type a title (the search opens on launch, or press **▲**). IMDb results appear as you type.
 2. Pick one: poster, rating, description, cast. TV shows get **Season / Episode** pickers
    (◀ ▶ to change, with episode names).
-3. **▶ Open**: the TV opens the site hidden, waits for it to load, clicks the middle of the
-   screen, waits 5 s, clicks again, waits 10 s, looking for the video after every step. If
-   there's still no video it shows an error. Once found, it loads 30 seconds of the
+3. **▶ Open**: the TV shows the video website (in a sandbox, see Safety). Use it like a
+   browser: **◀ ▲ ▼ ▶** move the round cursor (hold to go faster; push past the top or bottom
+   edge to scroll), **OK** clicks, **Back** cancels. Nothing is clicked for you. As soon as you
+   start the video there, the website closes and the app loads 30 seconds of the
    highest-quality stream with a **% counter** before it starts. It streams; nothing is saved.
 
 Remote: ▲ search · ▼▲ move · ◀ ▶ change season/episode (or skip 10 s while watching) ·
@@ -56,18 +57,18 @@ changes under `app/` need a new APK (built by the *Build APK* GitHub Action).
 
 The video website is treated as hostile.
 
-- **It never runs in the app you see.** When you press Open, the TV loads the site in a
-  separate hidden browser (Android's sandboxed WebView renderer) that has no access to the
+- **It never runs in the app's own page.** When you press Open, the TV shows the site in a
+  separate browser (Android's sandboxed WebView renderer) that has no access to the
   app, your files, camera, mic or location (all permission requests are denied, and the app
   only has the INTERNET permission).
-- In that hidden browser: downloads are ignored, popups and new windows are refused,
+- In that browser: downloads are ignored, popups and new windows are refused,
   alert/confirm/prompt are suppressed, the page can't leave the site or open other apps or
   app stores (if it ends up on another site anyway, it is stopped and sent back), service
   workers are blocked, and only https to public internet addresses is
   allowed. Nothing on your home network (router, computers, phones) can be reached. Video
   players embedded from another site may load, inside the same sandbox.
-- It never downloads the video: video and playlist requests are noted and cancelled, and
-  media pieces, images and fonts are cancelled too. Then its cookies, storage and cache are
+- The website never downloads the video: video and playlist requests are noted and
+  cancelled, and media pieces are cancelled too. Then its cookies, storage and cache are
   wiped and it is destroyed. If the page crashes the browser, the app just rebuilds it.
 - The found stream is checked before playback: only its small text playlists are read, in
   memory, to list every host it uses. Every one must be https on a normal public hostname
