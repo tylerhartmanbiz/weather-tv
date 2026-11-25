@@ -30,6 +30,7 @@ Options: --config FILE   use another settings file
          --watch         show the browser window (what ./helper.sh watch does)
 """
 import argparse
+import html
 import ipaddress
 import json
 import re
@@ -337,6 +338,10 @@ def cors_ok(resp):
 
 # ---------------------------------------------------------------- the sandboxed visit (like Scraper.scrape)
 
+class _Stop(Exception):
+    pass
+
+
 def visit(url, ua, watch=False, video_dir=None):
     site = site_of(urlparse(url).hostname)
     ev = {"tv_found": [], "media_no_ext": [], "blocked_main": [], "blocked_http": 0, "popups": 0,
@@ -375,10 +380,26 @@ def visit(url, ua, watch=False, video_dir=None):
             main = req.frame.parent_frame is None
         except Exception:
             main = False
-        if req.resource_type == "document" and main and site_of(p.hostname) != site:
-            ev["blocked_main"].append((now(), req.url))
-            feed.append(f"{now()}s BLOCKED going to another site")
-            return r.abort()
+        if req.resource_type == "document" and main:
+            if site_of(p.hostname) != site:
+                ev["blocked_main"].append((now(), req.url))
+                feed.append(f"{now()}s BLOCKED going to another site")
+                return r.abort()
+            # Follow server redirects one hop at a time, so a redirect to another site is caught
+            # (Playwright would otherwise follow it unseen; the TV checks every hop).
+            try:
+                resp = r.fetch(max_redirects=0, timeout=20000)
+            except Exception:
+                return r.abort()
+            loc = resp.headers.get("location")
+            if 300 <= resp.status < 400 and loc:
+                target = urljoin(req.url, loc)
+                tp = urlparse(target)
+                if tp.scheme != "https" or site_of(tp.hostname) != site:
+                    ev["blocked_main"].append((now(), target))
+                    feed.append(f"{now()}s BLOCKED redirect to another site")
+                    return r.abort()
+            return r.fulfill(response=resp)
         return r.continue_()
 
     with sync_playwright() as pw:
@@ -473,6 +494,39 @@ def visit(url, ua, watch=False, video_dir=None):
                 page.wait_for_load_state("load", timeout=10000)
             except Exception:
                 pass
+            # Did the video site's page actually load? (A blocked redirect or an error leaves a
+            # blank or error page, with nothing to click.)
+            try:
+                st = page.evaluate("() => ({t: ((document.body && document.body.innerText) || '').trim().length,"
+                                   " h: document.documentElement.outerHTML.length})")
+            except Exception:
+                st = None
+            final = urlparse(page.url)
+            ev["final_on_site"] = final.scheme == "https" and site_of(final.hostname) == site
+            ev["text_len"], ev["html_len"] = (st["t"], st["h"]) if st else (0, 0)
+            if not ev["final_on_site"] or st is None:
+                why = []
+                if ev["blocked_main"]:
+                    why.append("The site sent the browser to a DIFFERENT website, which is blocked (the TV "
+                               "blocks it too). Where it wanted to go:")
+                    why += [f"    {u}" for _, u in ev["blocked_main"]]
+                    why.append("If that's just the site's new address, put that address in "
+                               "config-noclaude.json instead.")
+                if ev["main_error"]:
+                    why.append(f"Browser error: {ev['main_error']}")
+                if not why:
+                    why.append(f"The browser ended up on: {page.url}")
+                ev["steps"].append(f"{now():5}s PAGE DID NOT LOAD: nothing to click")
+                if watch:
+                    page.set_content(
+                        "<body style='font:18px -apple-system,sans-serif;background:#1b1b1b;color:#eee;padding:30px'>"
+                        "<h2 style='color:#ff6b6b'>The video site's page didn't load</h2><pre style='white-space:"
+                        "pre-wrap;font:15px Menlo,monospace;color:#ffd54a'>" + html.escape("\n".join(why)) + "</pre>"
+                        "<p>The tool stops here (the TV would fail here too). Press Enter in the terminal.</p></body>")
+                    input("\nThe page didn't load: the browser window says why. Press Enter to finish the report... ")
+                raise _Stop()
+            if ev["text_len"] < 20 and not page.frames[1:]:
+                feed.append(f"{now()}s the page looks EMPTY")
             if not look("after loading"):
                 ev["before_clicks"] = 0
                 click(1)
@@ -535,6 +589,8 @@ def visit(url, ua, watch=False, video_dir=None):
                 overlay(mood="ok" if n else "bad")
                 input("\nWatching done. Look around the browser window if you like, then press Enter here to "
                       "close it and finish the report... ")
+        except _Stop:
+            ev["tv_window"] = now()
         except Exception as e:
             ev["error"] = f"{type(e).__name__}: {str(e).splitlines()[0][:200]}"
         finally:
@@ -556,11 +612,14 @@ CAUSES = {
     "CONFIG_BAD_URL": "The Open link in your settings isn't a valid https address the TV accepts "
                       "(https only, normal hostname, no port, no user:password).",
     "PAGE_UNREACHABLE": "The video page didn't load at all (no answer, bad address, or the site is down).",
+    "PAGE_EMPTY": "The page loaded but is empty (no text, no embedded player). Some sites show nothing to "
+                  "the Fire TV's browser: try again with --ua desktop to compare.",
     "PAGE_HTTP_ERROR": "The video page answered with an error code (see DETAILS, step 1).",
     "PAGE_BOT_CHECK": "The site showed a bot check / captcha / 'access denied' page instead of the "
                       "player. The TV can't get past those.",
-    "REDIRECT_OTHER_SITE": "The page tried to move to a different website, which the TV blocks. The "
-                           "page that holds the player may live on another domain.",
+    "REDIRECT_OTHER_SITE": "The site sends the browser to a different website, which the TV blocks. "
+                           "If that's the site's new address, use it in config-noclaude.json (the "
+                           "address is in DETAILS, step 1, or shown in the watch window).",
     "VIDEO_NEEDS_MORE_CLICKS": "The video only started after a third click (the first ones probably "
                                "hit ads / overlays). The TV clicks twice.",
     "VIDEO_TOO_SLOW": "The page did ask for the video, but only after the TV had already given up "
@@ -655,6 +714,8 @@ def main():
                f"first answer: HTTP {ev['main_status']}" + (f"  error: {ev['main_error']}" if ev["main_error"] else ""),
                f"title: {ev['title']!r}",
                f"bot-check / captcha words on page: {ev['challenge']}",
+               f"ended up on the video site: {ev.get('final_on_site')}   page text: {ev.get('text_len')} chars"
+               f"   page HTML: {ev.get('html_len')} chars",
                f"popups refused: {ev['popups']} ({ev['popups_after_click']} after clicking)",
                "what happened, step by step (like the TV):", *[f"    {x}" for x in ev["steps"]],
                f"plain-http requests blocked: {ev['blocked_http']}",
@@ -662,8 +723,14 @@ def main():
                "main page tried to go to another site (blocked, like the TV: it stays on the video site):",
                *[f"    {t:5}s {u}" for t, u in ev["blocked_main"]] or ["    none"],
                *([f"script error: {ev['error']}"] if ev["error"] else []), "")
-        if ev["main_error"] and ev["main_status"] is None:
+        if ev["blocked_main"] and not ev.get("final_on_site", True):
+            step("1. page loads", False, "the site sent the browser to a different website (blocked)")
+            fail("REDIRECT_OTHER_SITE")
+        elif ev["main_error"] and ev["main_status"] is None:
             step("1. page loads", False, "no answer from the site")
+            fail("PAGE_UNREACHABLE")
+        elif not ev.get("final_on_site", True):
+            step("1. page loads", False, "the browser didn't end up on the video site")
             fail("PAGE_UNREACHABLE")
         elif ev["main_status"] and ev["main_status"] >= 400 and not ev["tv_found"]:
             step("1. page loads", False, f"HTTP {ev['main_status']}")
@@ -671,6 +738,9 @@ def main():
         elif ev["challenge"] and not ev["tv_found"]:
             step("1. page loads", False, "looks like a bot check / captcha page")
             fail("PAGE_BOT_CHECK")
+        elif ev.get("text_len", 1) < 20 and not ev["frames"] and not ev["tv_found"] and not ev["dom_main"]:
+            step("1. page loads", False, f"HTTP {ev['main_status']}, but the page is empty")
+            fail("PAGE_EMPTY")
         else:
             step("1. page loads", True, f"HTTP {ev['main_status']}, {len(ev['frames'])} embedded frame(s), "
                                         f"{ev['popups']} popup(s) refused")
@@ -817,7 +887,8 @@ def main():
         *details,
     ]
     out.write_text("\n".join(report) + "\n")
-    print(f"Done. Report written to {out}")
+    print("\n".join(["", "SUMMARY", *summary, "", f"CAUSE: {code}", "  " + CAUSES[code], ""]))  # no addresses
+    print(f"Done. Full report: {out}")
     if ev.get("video_file"):
         print(f"Screen recording of what the browser did: {ev['video_file']}")
 
