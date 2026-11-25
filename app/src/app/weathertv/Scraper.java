@@ -183,6 +183,20 @@ final class Scraper {
     private static Session current;
 
     /**
+     * The live part: docs/site-control.js (in the app's own page, loaded fresh from GitHub Pages)
+     * decides how the remote drives the website. It gets events (emit) and sends back simple
+     * commands (command). Until it says hello, the built-in behaviour below is used instead.
+     */
+    interface Events { void send(String json); }
+    static volatile Events events;
+    private static volatile boolean controller;
+
+    static void emit(String type, String fields) {
+        Events e = events;
+        if (e != null) e.send("{\"type\":\"" + type + "\"" + (fields == null ? "" : "," + fields) + "}");
+    }
+
+    /**
      * Show url (must be on `site`) full screen for you to use with the remote, and return once
      * `checker` accepted a video link the site asked for ("ok"), or you pressed Back
      * ("cancelled"), the site crashed ("crashed"), or 15 minutes passed ("timeout").
@@ -215,8 +229,10 @@ final class Scraper {
                     + (engine > 0 && engine < 110 ? "\nThis device's web engine is old (Chrome " + engine
                     + "), so some websites won't work. Update the device's software." : ""));
             log("web engine: Chrome " + engine, null);
+            controller = false;
             current = s;
             log("website shown", url);
+            emit("shown", null);
             final Map<String, String> extra = new HashMap<String, String>();
             if (Methods.on(Methods.GOOGLE_REFERER)) extra.put("Referer", "https://www.google.com/");
             if (Methods.on(Methods.HOME_FIRST)) {                 // test method 23
@@ -246,11 +262,14 @@ final class Scraper {
                 continue;
             }
             if (s.ended != null) { result = s.ended; break; }
-            setHint(act, s, "Video found, checking it\u2026");
+            if (!controller) setHint(act, s, "Video found, checking it\u2026");
+            emit("checking", null);
             if (checker.accept(src)) { result = "ok"; break; }
-            setHint(act, s, "That video link can't be played safely. Keep trying, or Back to cancel.");
+            emit("rejected", null);
+            if (!controller) setHint(act, s, "That video link can't be played safely. Keep trying, or Back to cancel.");
         }
         log("website closed (" + result + ")", null);
+        controller = false;
 
         final CountDownLatch gone = new CountDownLatch(1);
         act.runOnUiThread(new Runnable() { public void run() {
@@ -277,6 +296,17 @@ final class Scraper {
         if (s == null || s.web == null || s.ended != null) return false;
         int code = e.getKeyCode();
         boolean down = e.getAction() == KeyEvent.ACTION_DOWN;
+        long held = e.getEventTime() - e.getDownTime();
+        if (controller) {
+            // Emergency exit that always works: hold Back 3 s.
+            if ((code == KeyEvent.KEYCODE_BACK || code == KeyEvent.KEYCODE_ESCAPE) && down && held >= 3000) {
+                s.ended = "cancelled";
+                return true;
+            }
+            emit("key", "\"key\":\"" + keyName(code) + "\",\"down\":" + down + ",\"repeat\":" + e.getRepeatCount()
+                    + ",\"held\":" + held);
+            return true;
+        }
         // Faster while an arrow is held; while dragging, a bit finer for exact placement.
         float step = s.dragging ? 8 + Math.min(e.getRepeatCount() * 4, 40) : 14 + Math.min(e.getRepeatCount() * 8, 60);
         CursorView c = s.cursor;
@@ -340,6 +370,97 @@ final class Scraper {
             if (s.web == null || s.ended != null || current != s || s.dragging) return;
             startDrag(s);
         }}, 150);
+    }
+
+    private static String keyName(int code) {
+        switch (code) {
+            case KeyEvent.KEYCODE_DPAD_LEFT: return "left";
+            case KeyEvent.KEYCODE_DPAD_RIGHT: return "right";
+            case KeyEvent.KEYCODE_DPAD_UP: return "up";
+            case KeyEvent.KEYCODE_DPAD_DOWN: return "down";
+            case KeyEvent.KEYCODE_DPAD_CENTER: case KeyEvent.KEYCODE_ENTER: case KeyEvent.KEYCODE_NUMPAD_ENTER:
+            case KeyEvent.KEYCODE_BUTTON_A: return "ok";
+            case KeyEvent.KEYCODE_BACK: case KeyEvent.KEYCODE_ESCAPE: return "back";
+            case KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE: case KeyEvent.KEYCODE_MEDIA_PLAY: case KeyEvent.KEYCODE_MEDIA_PAUSE:
+            case KeyEvent.KEYCODE_SPACE: return "playpause";
+            case KeyEvent.KEYCODE_MEDIA_REWIND: return "rewind";
+            case KeyEvent.KEYCODE_MEDIA_FAST_FORWARD: return "forward";
+            case KeyEvent.KEYCODE_MENU: return "menu";
+            default: return "key" + code;
+        }
+    }
+
+    /**
+     * A command from site-control.js (called on a background thread). Returns the state as JSON:
+     * {"open","w","h","x","y","dragging","density"} (positions in screen pixels).
+     *   hello                 take over the remote for this website
+     *   state                 just the state
+     *   center                cursor to the middle
+     *   cursor&x=&y=          cursor to (x, y)
+     *   move&dx=&dy=          move the cursor (edges scroll; while holding it drags smoothly)
+     *   tap[&x=&y=]           click at the cursor (or at x, y)
+     *   down / up             put the "finger" down at the cursor / lift it (drag mode)
+     *   scroll&dx=&dy=        scroll the page (CSS pixels)
+     *   hint&text=            show a bar with text at the bottom (empty text hides it)
+     *   close                 close the website (like Back)
+     */
+    static String command(final Activity act, final FrameLayout root, final Uri u) throws InterruptedException {
+        final String op = u.getQueryParameter("op") == null ? "" : u.getQueryParameter("op");
+        final String[] out = {"{\"open\":false}"};
+        final CountDownLatch done = new CountDownLatch(1);
+        act.runOnUiThread(new Runnable() { public void run() {
+            try {
+                Session s = current;
+                if (s == null || s.web == null || s.ended != null) return;
+                CursorView c = s.cursor;
+                if ("hello".equals(op)) { controller = true; log("site-control.js took over the remote", null); }
+                else if ("center".equals(op)) c.moveTo(c.getWidth() / 2f, c.getHeight() / 2f);
+                else if ("cursor".equals(op)) c.moveTo(num(u, "x", c.x), num(u, "y", c.y));
+                else if ("move".equals(op)) move(s, num(u, "dx", 0), num(u, "dy", 0));
+                else if ("tap".equals(op)) {
+                    float x = num(u, "x", c.x), y = num(u, "y", c.y);
+                    if (Methods.on(Methods.MOUSE)) mouseClick(s.web, x, y); else tap(s.web, x, y);
+                }
+                else if ("down".equals(op)) { if (!s.dragging) startDrag(s); }
+                else if ("up".equals(op)) { if (s.dragging) endDrag(s); }
+                else if ("scroll".equals(op)) {
+                    s.web.evaluateJavascript("window.scrollBy(" + Math.round(num(u, "dx", 0)) + ","
+                            + Math.round(num(u, "dy", 0)) + ")", null);
+                }
+                else if ("hint".equals(op)) showHint(act, root, s, u.getQueryParameter("text"));
+                else if ("close".equals(op)) { if (s.dragging) endDrag(s); s.ended = "cancelled"; }
+                out[0] = "{\"open\":true,\"w\":" + c.getWidth() + ",\"h\":" + c.getHeight() + ",\"x\":" + c.x
+                        + ",\"y\":" + c.y + ",\"dragging\":" + s.dragging + ",\"density\":"
+                        + act.getResources().getDisplayMetrics().density + "}";
+            } finally {
+                done.countDown();
+            }
+        }});
+        done.await(2, TimeUnit.SECONDS);
+        return out[0];
+    }
+
+    private static float num(Uri u, String k, float dflt) {
+        try { return Float.parseFloat(u.getQueryParameter(k)); } catch (Exception e) { return dflt; }
+    }
+
+    /** The bottom text bar, only when site-control.js asks for it. */
+    private static void showHint(Activity act, FrameLayout root, Session s, String text) {
+        if (text == null || text.isEmpty()) { if (s.hint != null) s.hint.setVisibility(View.GONE); return; }
+        if (s.hint == null) {
+            s.hint = new TextView(act);
+            s.hint.setTextColor(Color.WHITE);
+            s.hint.setTextSize(17);
+            s.hint.setBackgroundColor(0xCC000000);
+            s.hint.setPadding(30, 14, 30, 14);
+            FrameLayout.LayoutParams bottom = new FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                    Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+            bottom.bottomMargin = 30;
+            root.addView(s.hint, bottom);
+        }
+        s.hint.setText(text.length() > 300 ? text.substring(0, 300) : text);
+        s.hint.setVisibility(View.VISIBLE);
     }
 
     /** Put the "finger" down at the cursor and keep it there (drag mode). */
@@ -715,6 +836,7 @@ final class Scraper {
             public void onPageFinished(WebView v, String u) {
                 if (sniff && u != null && !u.startsWith("about:")) v.evaluateJavascript(SNIFF_JS, null);
                 if (testing) log("page finished loading", u);
+                if (u != null && !u.startsWith("about:")) emit("loaded", null);
                 maybeAutoStart(v, u);   // fallback if the page never reported being visible
             }
 
@@ -723,12 +845,18 @@ final class Scraper {
                 maybeAutoStart(v, u);   // the moment the page first shows
             }
 
-            /** As soon as the video page shows: click the middle for you, then hold (autoStart). */
+            /**
+             * As soon as the video page shows: tell site-control.js ("visible"), which decides
+             * what to do. Built-in fallback if it isn't there: click the middle, then hold.
+             */
             private void maybeAutoStart(WebView v, String u) {
                 if (u != null && !u.startsWith("about:") && !session.autoStarted
                         && (!Methods.on(Methods.HOME_FIRST) || u.equals(startUrl))) {
                     session.autoStarted = true;
-                    v.post(new Runnable() { public void run() { autoStart(session); } });
+                    emit("visible", null);
+                    v.postDelayed(new Runnable() { public void run() {
+                        if (!controller) autoStart(session);
+                    }}, 300);
                 }
             }
 

@@ -57,9 +57,19 @@ search.
 
 ## How updates work (no reinstall)
 
-The APK is a thin shell around `docs/index.html` on GitHub Pages, and the website address is
-in `docs/config-noclaude.json`. Push a change and the TV picks it up on next launch (or Menu ☰). Only
-changes under `app/` need a new APK (built by the *Build APK* GitHub Action).
+The APK is a thin shell. Everything you'd want to change is in `docs/` on GitHub Pages and is
+**live**: push it and the TV uses it on its next launch, or press **Menu ☰**. No reinstall.
+
+| File | What it controls |
+|---|---|
+| `docs/index.html` | the app's screens: search, details, player |
+| `docs/site-control.js` | how the remote drives the video website: auto-click, hold mode, drag, cursor speed, help bar (settings at the top of the file) |
+| `docs/config-noclaude.json` | the video website's address |
+
+Only changes under `app/` need a new APK (built by the *Build APK* GitHub Action): the
+sandbox's safety rules, and the basic actions `site-control.js` can ask for (move the cursor,
+tap, finger down/up, scroll, text bar, close). Hold **Back** for 3 seconds to close the website
+even if `site-control.js` is broken.
 
 ## Safety
 

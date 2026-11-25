@@ -93,6 +93,14 @@ public class MainActivity extends Activity {
             Scraper.log("web engine: Chrome " + Scraper.webViewMajor(), null);
         }
         Scraper.blockServiceWorkers();
+        // Events for docs/site-control.js (the live remote-control logic in the app's page).
+        Scraper.events = new Scraper.Events() {
+            public void send(final String json) {
+                runOnUiThread(new Runnable() { public void run() {
+                    if (web != null) web.evaluateJavascript("window.siteEvent&&window.siteEvent(" + json + ")", null);
+                }});
+            }
+        };
         createWebView();
         reload();
     }
@@ -290,8 +298,23 @@ public class MainActivity extends Activity {
                 Net.Resp r = Net.fetch(url, post, "application/json", 4_000_000, null);
                 code = r.status;
                 body = r.text;
+            } else if ("open".equals(name) && "1".equals(u.getQueryParameter("async"))) {
+                // Start, answer right away; the result arrives later as a "result" event.
+                final String url = u.getQueryParameter("url");
+                new Thread(new Runnable() { public void run() {
+                    String res;
+                    try {
+                        res = open(url).toString();
+                    } catch (Exception e) {
+                        res = "{\"videos\":[],\"error\":" + JSONObject.quote(String.valueOf(e.getMessage())) + "}";
+                    }
+                    Scraper.emit("result", "\"data\":" + res);
+                }}).start();
+                body = "{\"started\":true}";
             } else if ("open".equals(name)) {
                 body = open(u.getQueryParameter("url")).toString();
+            } else if ("site".equals(name)) {
+                body = Scraper.command(this, root, u);
             } else {
                 code = 404;
                 body = "{\"error\":\"not found\"}";

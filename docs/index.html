@@ -297,14 +297,32 @@ async function imdbEpisodes(id, season) {
 }
 
 // ---------- Open: the TV opens the video site hidden + sandboxed and returns its stream ----------
+// ---------- the website view: live remote-control logic + events from the app ----------
+// site-control.js is loaded fresh each time (no cache), so pushing it changes the TV right away.
+(function () {
+  const sc = document.createElement('script');
+  sc.src = 'site-control.js?t=' + Date.now();
+  document.head.appendChild(sc);
+})();
+let pendingOpen = null;
+window.siteEvent = ev => {
+  if (ev.type === 'result') { if (pendingOpen) { pendingOpen(ev.data); pendingOpen = null; } return; }
+  try { if (window.SiteControl) window.SiteControl.onEvent(ev); } catch (e) { }
+};
+
 async function openStream(t, season, episode) {
   const c = await config();
   const tmpl = t.isTv ? c.openUrlTv : c.openUrl;
   if (!tmpl) throw new Error(`Your settings have no "${t.isTv ? 'openUrlTv' : 'openUrl'}" for this kind of title.`);
   const url = tmpl
     .replace('{imdb_id}', t.id).replace('{season}', season).replace('{episode}', episode);
-  const r = await fetch('api/open?url=' + encodeURIComponent(url), { cache: 'no-store' });
-  return r.json();
+  // New app: answers {started} at once and sends the result later as an event.
+  // Older app: answers with the result itself when the website closes.
+  const done = new Promise(res => { pendingOpen = res; });
+  const r = await fetch('api/open?async=1&url=' + encodeURIComponent(url), { cache: 'no-store' });
+  const j = await r.json();
+  if (!j.started) { pendingOpen = null; return j; }
+  return done;
 }
 
 // ---------- player ----------
