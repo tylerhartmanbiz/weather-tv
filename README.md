@@ -17,7 +17,10 @@ that, updates arrive by themselves; see below.)
 
 ## Set the video website
 
-Edit `docs/config.json` and push:
+Put your settings in `docs/config-noclaude.json`, using the same format as the example
+`docs/config.json`, and push. The app reads `config-noclaude.json` first and only falls back to
+`config.json` if it's missing. (Claude is told never to open `config-noclaude.json`.) Note that
+everything in `docs/` is public on GitHub Pages, because that's where the TV downloads it from.
 
 ```json
 "openUrl":   "https://test.com/{imdb_id}",                      // movies
@@ -31,7 +34,8 @@ Edit `docs/config.json` and push:
 1. Type a title (the search opens on launch, or press **▲**). IMDb results appear as you type.
 2. Pick one: poster, rating, description, cast. TV shows get **Season / Episode** pickers
    (◀ ▶ to change, with episode names).
-3. **▶ Open**: the TV finds the video (up to ~30 s), then loads 30 seconds of the
+3. **▶ Open**: the TV opens the site hidden, lets it load, clicks the player (a second time if
+   the first click only hit an ad or overlay), and finds the video (up to ~30 s), then loads 30 seconds of the
    highest-quality stream with a **% counter** before it starts. It streams; nothing is saved.
 
 Remote: ▲ search · ▼▲ move · ◀ ▶ change season/episode (or skip 10 s while watching) ·
@@ -44,7 +48,7 @@ search.
 ## How updates work (no reinstall)
 
 The APK is a thin shell around `docs/index.html` on GitHub Pages, and the website address is
-in `docs/config.json`. Push a change and the TV picks it up on next launch (or Menu ☰). Only
+in `docs/config-noclaude.json`. Push a change and the TV picks it up on next launch (or Menu ☰). Only
 changes under `app/` need a new APK (built by the *Build APK* GitHub Action).
 
 ## Safety
@@ -57,7 +61,8 @@ The video website is treated as hostile.
   only has the INTERNET permission).
 - In that hidden browser: downloads are ignored, popups and new windows are refused,
   alert/confirm/prompt are suppressed, the page can't leave the site or open other apps or
-  app stores, service workers are blocked, and only https to public internet addresses is
+  app stores (if it ends up on another site anyway, it is stopped and sent back), service
+  workers are blocked, and only https to public internet addresses is
   allowed. Nothing on your home network (router, computers, phones) can be reached. Video
   players embedded from another site may load, inside the same sandbox.
 - It never downloads the video: video and playlist requests are noted and cancelled, and
@@ -77,5 +82,7 @@ The video website is treated as hostile.
 ## Optional computer tools
 
 Not needed for the TV. `./helper.sh open tt0993846 [season episode]` tests a site's Open link
-from a Mac (sandboxed Chromium). `server.py` and `imdb.py` are leftovers from the old
+from a Mac (sandboxed Chromium). `./helper.sh diagnose tt0993846 [season episode]` finds out
+why a title won't play on the TV and writes a report to `debug/diagnose-report.txt` (git-ignored).
+`server.py` and `imdb.py` are leftovers from the old
 computer-based version and can be deleted.

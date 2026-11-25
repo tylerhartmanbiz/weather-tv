@@ -1,9 +1,14 @@
 #!/usr/bin/env python3
 """Search server for the TV:  ./helper.sh serve
 
-The TV asks this computer to search (GET /api/search?q=tornado). It replays the recorded
-RECIPE from scrapper.py in the locked-down browser (safe_browser.py) and sends back only the
-video links + titles as JSON. The TV never visits the website itself.
+The TV asks this computer to:
+  * /api/imdb/search?q=wolf of w   IMDb titles as you type (imdb.py)
+  * /api/imdb/title?id=tt0993846    poster, cast, description, seasons (imdb.py)
+  * /api/imdb/episodes?id=tt0903747&season=1   episode names for one season (imdb.py)
+  * /api/open?id=tt0993846          scrape the video from OPEN_URL (scrapper.open_title)
+  * /api/open?id=tt0903747&s=1&e=2  same, one TV episode (OPEN_URL_TV)
+  * /api/search?q=tornado           replay the recorded RECIPE (scrapper.search)
+Only video links + titles go back to the TV as JSON. The TV never visits the website itself.
 Keep this running while you use search on the TV (same Wi-Fi network).
 """
 import json
@@ -16,6 +21,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import imdb
 import scrapper
 
 PORT = 8765
@@ -51,9 +57,19 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         if u.path == "/api/ping":
             return self.send_json({"ok": True})
+        arg = lambda k: (parse_qs(u.query).get(k) or [""])[0].strip()[:100]
+        if u.path == "/api/imdb/search":
+            return self.cached("imdb-search", arg("q").lower(), imdb.search_result, lock=False)
+        if u.path == "/api/imdb/title":
+            return self.cached("imdb-title", arg("id"), imdb.title_result, lock=False)
+        if u.path == "/api/imdb/episodes":
+            return self.cached("imdb-episodes", f"{arg('id')}:{arg('season')}", imdb.episodes_result, lock=False)
+        if u.path == "/api/open":
+            key = arg("id") + (f":{arg('s')}:{arg('e')}" if arg("s") or arg("e") else "")
+            return self.cached("open", key, open_result, lock=True)
         if u.path != "/api/search":
             return self.send_json({"error": "not found"}, 404)
-        q = (parse_qs(u.query).get("q") or [""])[0].strip()[:100]
+        q = arg("q")
         if not q:
             return self.send_json({"error": "empty search"}, 400)
         key = q.lower()
@@ -72,6 +88,27 @@ class Handler(BaseHTTPRequestHandler):
         print(f"search {q!r}: {len(result['videos'])} videos")
         self.send_json(result)
 
+    def cached(self, kind, key, fn, lock):
+        if not key:
+            return self.send_json({"error": "missing parameter"})
+        hit = CACHE.get((kind, key))
+        if hit and time.time() - hit[0] < CACHE_SECONDS:
+            return self.send_json(hit[1])
+        try:
+            if lock:
+                with LOCK:  # one browser at a time
+                    result = fn(key)
+            else:
+                result = fn(key)
+        except Exception as e:
+            print(f"{kind} {key!r} failed: {e}")
+            result = {"error": f"{kind} failed"}  # TV shows a message; errors aren't cached
+            return self.send_json(result)
+        CACHE[(kind, key)] = (time.time(), result)
+        if kind == "open":
+            print(f"open {key}: {len(result.get('videos', []))} video(s) {result.get('allowedHosts')}")
+        self.send_json(result)
+
     def send_json(self, obj, code=200):
         body = json.dumps(obj, ensure_ascii=False).encode()
         self.send_response(code)
@@ -84,9 +121,18 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def open_result(key):
+    imdb_id, *ep = key.split(":")
+    if not scrapper.IMDB_ID_RE.match(imdb_id):
+        return {"error": "bad IMDb id"}
+    if ep and not (len(ep) == 2 and all(x.isdigit() and len(x) <= 4 for x in ep)):
+        return {"error": "bad season/episode"}
+    return scrapper.open_title(imdb_id, *ep) if ep else scrapper.open_title(imdb_id)
+
+
 def main():
     if not scrapper.RECIPE:
-        sys.exit("No recipe yet. Run ./helper.sh record first.")
+        print("Note: no search RECIPE recorded yet; IMDb search + Open still work.")
     addr = f"http://{lan_ip()}:{PORT}"
     if "--no-publish" not in sys.argv:
         publish_address(addr)

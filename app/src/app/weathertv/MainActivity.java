@@ -123,6 +123,7 @@ public class MainActivity extends Activity {
                     return api(path.substring(API_PREFIX.length()), u);
                 }
                 if ("https".equals(u.getScheme()) && allowedHosts.contains(u.getHost())) return null;
+                if (!"tylerhartmanbiz.github.io".equals(u.getHost())) Scraper.log("app: blocked", u.toString());
                 return Scraper.blocked();
             }
 
@@ -164,7 +165,7 @@ public class MainActivity extends Activity {
             Set<String> data = new HashSet<String>(DEFAULT_DATA_HOSTS);
             Set<String> sites = new HashSet<String>();
             try {
-                JSONObject cfg = new JSONObject(appFile("config.json"));
+                JSONObject cfg = config();
                 for (String k : new String[]{"openUrl", "openUrlTv"}) {
                     String t = cfg.optString(k, "");
                     if (t.isEmpty()) continue;
@@ -193,6 +194,15 @@ public class MainActivity extends Activity {
                 web.requestFocus();
             }});
         }}).start();
+    }
+
+    /** Your settings: docs/config-noclaude.json; docs/config.json is the example/fallback. */
+    private static JSONObject config() throws Exception {
+        try {
+            return new JSONObject(appFile("config-noclaude.json"));
+        } catch (Exception e) {
+            return new JSONObject(appFile("config.json"));
+        }
     }
 
     private static String appFile(String name) throws Exception {
@@ -246,20 +256,22 @@ public class MainActivity extends Activity {
         synchronized (scrapeLock) { // one hidden browser at a time
             candidates = Scraper.scrape(this, root, url, site);
         }
+        Scraper.log(candidates.size() + " video link(s) to check", null);
         int tried = 0;
         for (String src : candidates) {
             if (++tried > 8) break;
             try {
                 Net.Stream s = Net.inspect(src);
                 allowedHosts.addAll(s.hosts); // the player may now stream from exactly these hosts
+                Scraper.log("PLAYING " + (s.quality.isEmpty() ? "" : s.quality + " ") + "from hosts " + s.hosts, src);
                 JSONObject v = new JSONObject();
                 v.put("src", src);
                 v.put("quality", s.quality);
                 out.put("videos", new JSONArray().put(v));
                 out.put("allowedHosts", new JSONArray(s.hosts));
                 return out;
-            } catch (Exception ignored) {
-                // unsafe or not a real stream: try the next one
+            } catch (Exception e) {
+                Scraper.log("rejected (" + e.getMessage() + ")", src); // unsafe or not a real stream: try the next
             }
         }
         out.put("videos", new JSONArray());

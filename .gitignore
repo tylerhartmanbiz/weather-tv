@@ -6,3 +6,5 @@ __pycache__/
 signing-key-password.txt
 .playwright-mcp/
 .venv/
+.android-sdk/
+debug/

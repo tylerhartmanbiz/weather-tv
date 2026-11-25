@@ -48,7 +48,8 @@
   .pills { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1rem; }
   .pill { background: #1d222a; border: 1px solid #2a313b; border-radius: 999px; padding: .2rem .8rem; font-size: .9rem; }
   .pill.tv { border-color: #f5c518; color: #f5c518; }
-  #dplot { font-size: 1.1rem; line-height: 1.5; margin: 0 0 1.2rem; max-width: 70ch; }
+  #dplot { font-size: 1.1rem; line-height: 1.5; margin: 0 0 1.2rem; max-width: 70ch;
+           display: -webkit-box; -webkit-line-clamp: 5; -webkit-box-orient: vertical; overflow: hidden; }
   #epick { display: flex; gap: 1rem; margin-bottom: 1.2rem; }
   .sel { display: flex; align-items: center; gap: .6rem; background: #161a20; border: 3px solid #2a313b;
          border-radius: .7rem; padding: .5rem 1rem; outline: none; font-size: 1.15rem; min-width: 9rem; }
@@ -159,7 +160,12 @@ function safeVideos(d) {
 //   api/open?url=..           opens the video site hidden + sandboxed, returns its stream
 let cfg = null;
 async function config() {
-  if (!cfg) cfg = await (await fetch('config.json?t=' + Date.now(), { cache: 'no-store' })).json();
+  // Your settings: config-noclaude.json. config.json is the example, used only if that's missing.
+  for (const name of ['config-noclaude.json', 'config.json']) {
+    if (cfg) break;
+    try { const r = await fetch(name + '?t=' + Date.now(), { cache: 'no-store' }); if (r.ok) cfg = await r.json(); } catch (e) { }
+  }
+  if (!cfg) throw new Error('no config');
   return cfg;
 }
 async function getJson(url, post) {

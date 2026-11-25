@@ -2,10 +2,12 @@ package app.weathertv;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Message;
 import android.os.SystemClock;
+import android.util.Log;
 import android.view.MotionEvent;
 import android.view.View;
 import android.webkit.CookieManager;
@@ -29,6 +31,7 @@ import android.widget.FrameLayout;
 
 import java.io.ByteArrayInputStream;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -36,6 +39,8 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.json.JSONArray;
 
@@ -49,7 +54,8 @@ import org.json.JSONArray;
  *    denied, and the app only has the INTERNET permission anyway).
  *  * Downloads are ignored. Popups / new windows are refused. alert/confirm/prompt are
  *    suppressed. The page can't navigate away from the site or open other apps (intent:,
- *    market:, etc.). Service workers are blocked.
+ *    market:, etc.); if it somehow ends up on another site anyway, it is stopped and sent
+ *    back. Service workers are blocked.
  *  * Every request must be https to a public hostname that resolves to public internet
  *    addresses: nothing on your home network can be reached. Video players embedded from
  *    another site may load (they stay inside this same sandbox).
@@ -60,6 +66,12 @@ import org.json.JSONArray;
  */
 final class Scraper {
     private Scraper() { }
+
+    static final String TAG = "VideoTV";  // see these with: ./emulator.sh logs
+
+    static void log(String what, String url) {
+        Log.i(TAG, what + (url == null ? "" : ": " + (url.length() > 160 ? url.substring(0, 160) + "..." : url)));
+    }
 
     private static final String[] VIDEO_EXT = {".m3u8", ".mp4"};
     private static final String[] BLOCK_EXT = {".ts", ".m4s", ".m4a", ".m4v", ".aac", ".cmfv", ".cmfa", ".mp3",
@@ -72,6 +84,14 @@ final class Scraper {
             + "var re=/https:\\/\\/[^\"'\\s<>\\\\]+?\\.(?:m3u8|mp4)(?:\\?[^\"'\\s<>\\\\]*)?/gi,m;"
             + "while((m=re.exec(h))&&o.length<50)o.push(m[0]);"
             + "}catch(x){}return o})()";
+    /** Center (CSS px) of the biggest visible player-like element, plus the page width; or null. */
+    private static final String PLAYER_JS = "(function(){try{var b=null,a=0,W=innerWidth,H=innerHeight;"
+            + "document.querySelectorAll('video,iframe,embed,object,canvas').forEach(function(e){"
+            + "var r=e.getBoundingClientRect();if(r.width<200||r.height<120)return;"
+            + "var s=Math.max(0,Math.min(r.right,W)-Math.max(r.left,0))*Math.max(0,Math.min(r.bottom,H)-Math.max(r.top,0));"
+            + "if(s>a){a=s;b=r}});"
+            + "if(!b)return null;return[(Math.max(b.left,0)+Math.min(b.right,W))/2,(Math.max(b.top,0)+Math.min(b.bottom,H))/2,W]"
+            + "}catch(x){return null}})()";
     private static final String PLAY_JS = "(function(){try{document.querySelectorAll('video').forEach(function(v){"
             + "v.muted=true;var p=v.play();if(p&&p.catch)p.catch(function(){})})}catch(x){}})()";
 
@@ -104,33 +124,30 @@ final class Scraper {
     static List<String> scrape(final Activity act, final FrameLayout root, final String url, final String site)
             throws InterruptedException {
         final Set<String> found = Collections.synchronizedSet(new LinkedHashSet<String>());
-        final CountDownLatch gotVideo = new CountDownLatch(1);
+        final CountDownLatch loaded = new CountDownLatch(1);
+        final AtomicBoolean crashed = new AtomicBoolean(false);
         final WebView[] holder = new WebView[1];
 
         act.runOnUiThread(new Runnable() { public void run() {
-            WebView w = build(act, root, holder, site, found, gotVideo);
+            WebView w = build(act, root, holder, site, url, found, loaded, crashed);
             holder[0] = w;
             // Hidden: underneath the app's own (opaque) WebView, never focused.
             root.addView(w, 0, new FrameLayout.LayoutParams(1280, 720));
+            log("sandbox opened", url);
             w.loadUrl(url);
         }});
 
-        if (!gotVideo.await(7, TimeUnit.SECONDS)) {
-            // Nothing yet: press play once in the middle of the player, like a person would.
-            act.runOnUiThread(new Runnable() { public void run() {
-                WebView w = holder[0];
-                if (w == null) return;
-                long t = SystemClock.uptimeMillis();
-                float x = w.getWidth() / 2f, y = w.getHeight() / 2f;
-                MotionEvent down = MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, x, y, 0);
-                MotionEvent up = MotionEvent.obtain(t, t + 80, MotionEvent.ACTION_UP, x, y, 0);
-                w.dispatchTouchEvent(down);
-                w.dispatchTouchEvent(up);
-                down.recycle();
-                up.recycle();
-                w.evaluateJavascript(PLAY_JS, null);
-            }});
-            gotVideo.await(18, TimeUnit.SECONDS);
+        // Let the page (and its player) load, then press play like a person would: once
+        // always (the first click often only dismisses an overlay or ad), and a second time
+        // if no new video link showed up. Popups those clicks trigger are refused.
+        loaded.await(6, TimeUnit.SECONDS);
+        Thread.sleep(1000);
+        int before = found.size();
+        click(act, holder, 1);
+        if (!waitForVideo(found, before, crashed, 3000)) {
+            click(act, holder, 2);
+            // Something already loaded with the page? Then don't wait long for anything newer.
+            waitForVideo(found, before, crashed, before > 0 ? 4000 : 15000);
         }
         Thread.sleep(1500); // let the player finish asking for its playlists
 
@@ -163,13 +180,66 @@ final class Scraper {
             gone.countDown();
         }});
         gone.await(5, TimeUnit.SECONDS);
+        log("sandbox wiped and destroyed", null);
 
-        List<String> out = new ArrayList<String>();
-        synchronized (found) {
-            for (String s : found) if (s.toLowerCase(Locale.ROOT).contains(".m3u8")) out.add(s);
-            for (String s : found) if (!out.contains(s)) out.add(s);
+        // Try first what the page asked for after the clicks (the real video; something that
+        // loaded with the page is more likely a preview or an ad), HLS before .mp4.
+        List<String> all, out = new ArrayList<String>();
+        synchronized (found) { all = new ArrayList<String>(found); }
+        List<String> afterClick = all.subList(Math.min(before, all.size()), all.size());
+        for (List<String> group : Arrays.asList(afterClick, all)) {
+            for (String s : group) if (s.toLowerCase(Locale.ROOT).contains(".m3u8") && !out.contains(s)) out.add(s);
+            for (String s : group) if (!out.contains(s)) out.add(s);
         }
         return out;
+    }
+
+    /** Wait until a new video link is found (true), the time is up, or the sandbox crashed. */
+    private static boolean waitForVideo(Set<String> found, int before, AtomicBoolean crashed, long ms)
+            throws InterruptedException {
+        long end = SystemClock.uptimeMillis() + ms;
+        while (SystemClock.uptimeMillis() < end && !crashed.get()) {
+            if (found.size() > before) return true;
+            Thread.sleep(200);
+        }
+        return found.size() > before;
+    }
+
+    /** Tap the middle of the page's player (or of the page), then ask its videos to play. */
+    private static void click(final Activity act, final WebView[] holder, final int n) throws InterruptedException {
+        final CountDownLatch done = new CountDownLatch(1);
+        act.runOnUiThread(new Runnable() { public void run() {
+            final WebView w = holder[0];
+            if (w == null) { done.countDown(); return; }
+            w.evaluateJavascript(PLAYER_JS, new ValueCallback<String>() {
+                public void onReceiveValue(String v) {
+                    try {
+                        if (holder[0] != w) return;
+                        float x = w.getWidth() / 2f, y = w.getHeight() / 2f;
+                        try {
+                            JSONArray p = new JSONArray(v);
+                            double scale = w.getWidth() / Math.max(1.0, p.getDouble(2));
+                            x = (float) Math.max(1, Math.min(w.getWidth() - 1, p.getDouble(0) * scale));
+                            y = (float) Math.max(1, Math.min(w.getHeight() - 1, p.getDouble(1) * scale));
+                            log("click " + n + " on the player", null);
+                        } catch (Exception noPlayer) {
+                            log("click " + n + " in the middle (no player found on the page)", null);
+                        }
+                        long t = SystemClock.uptimeMillis();
+                        MotionEvent down = MotionEvent.obtain(t, t, MotionEvent.ACTION_DOWN, x, y, 0);
+                        MotionEvent up = MotionEvent.obtain(t, t + 80, MotionEvent.ACTION_UP, x, y, 0);
+                        w.dispatchTouchEvent(down);
+                        w.dispatchTouchEvent(up);
+                        down.recycle();
+                        up.recycle();
+                        w.evaluateJavascript(PLAY_JS, null);
+                    } finally {
+                        done.countDown();
+                    }
+                }
+            });
+        }});
+        done.await(3, TimeUnit.SECONDS);
     }
 
     private static void destroy(FrameLayout root, WebView w, boolean alive) {
@@ -194,7 +264,9 @@ final class Scraper {
 
     @SuppressLint("SetJavaScriptEnabled")
     private static WebView build(Activity act, final FrameLayout root, final WebView[] holder, final String site,
-                                 final Set<String> found, final CountDownLatch gotVideo) {
+                                 final String startUrl, final Set<String> found, final CountDownLatch loaded,
+                                 final AtomicBoolean crashed) {
+        final AtomicInteger sentBack = new AtomicInteger(0);
         final WebView w = new WebView(act);
         w.setFocusable(false);
         w.setFocusableInTouchMode(false);
@@ -219,7 +291,7 @@ final class Scraper {
         CookieManager.getInstance().setAcceptThirdPartyCookies(w, false);
 
         w.setDownloadListener(new DownloadListener() {
-            public void onDownloadStart(String u, String ua, String cd, String mime, long len) { /* never download */ }
+            public void onDownloadStart(String u, String ua, String cd, String mime, long len) { log("BLOCKED download", u); }
         });
 
         w.setWebViewClient(new WebViewClient() {
@@ -227,8 +299,14 @@ final class Scraper {
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
                 Uri u = r.getUrl();
                 String host = u.getHost() == null ? "" : u.getHost().toLowerCase(Locale.ROOT);
-                if (!"https".equals(u.getScheme()) || !Net.isPublicHostname(host)) return true; // intent:, market:, ...
-                if (r.isForMainFrame() && !site.equals(Net.siteOf(host))) return true;        // stay on the site
+                if (!"https".equals(u.getScheme()) || !Net.isPublicHostname(host)) {   // intent:, market:, ...
+                    log("BLOCKED navigation", u.toString());
+                    return true;
+                }
+                if (r.isForMainFrame() && !site.equals(Net.siteOf(host))) {             // stay on the site
+                    log("BLOCKED redirect to another site", u.toString());
+                    return true;
+                }
                 return false;
             }
 
@@ -238,15 +316,20 @@ final class Scraper {
                 String scheme = u.getScheme() == null ? "" : u.getScheme();
                 if ("data".equals(scheme) || "blob".equals(scheme)) return null;
                 String host = u.getHost() == null ? "" : u.getHost().toLowerCase(Locale.ROOT);
-                if (!"https".equals(scheme) || !Net.isPublicHostname(host) || !Net.resolvesPublic(host)) return blocked();
+                if (!"https".equals(scheme) || !Net.isPublicHostname(host) || !Net.resolvesPublic(host)) {
+                    log("BLOCKED (not https, a home-network address, or the site doesn't exist)", u.toString());
+                    return blocked();
+                }
                 String path = u.getPath() == null ? "" : u.getPath().toLowerCase(Locale.ROOT);
                 if (endsWithAny(path, VIDEO_EXT)) {         // the prize: note it, don't download it
-                    if (found.size() < 50) found.add(u.toString());
-                    gotVideo.countDown();
+                    if (found.size() < 50 && found.add(u.toString())) log("video link found (not downloaded)", u.toString());
                     return blocked();
                 }
                 if (endsWithAny(path, BLOCK_EXT)) return blocked();
-                if (r.isForMainFrame() && !site.equals(Net.siteOf(host))) return blocked();
+                if (r.isForMainFrame() && !site.equals(Net.siteOf(host))) {
+                    log("BLOCKED page from another site", u.toString());
+                    return blocked();
+                }
                 return null;
             }
 
@@ -254,19 +337,45 @@ final class Scraper {
             public boolean onRenderProcessGone(WebView v, RenderProcessGoneDetail d) {
                 // The page crashed its sandbox: throw this WebView away (it must not be used
                 // again), keep the app running.
+                log("sandbox crashed; discarded", null);
                 if (holder[0] == v) holder[0] = null;
                 destroy(root, v, false);
-                gotVideo.countDown();
+                crashed.set(true);
                 return true;
+            }
+
+            @Override
+            public void onPageStarted(WebView v, String u, Bitmap icon) {
+                // Last line of defence: if the page ended up on another site anyway, stop it
+                // and send it back to the video page (a few times at most).
+                if (u == null || u.startsWith("about:")) return;
+                String host = Uri.parse(u).getHost();
+                if (host != null && site.equals(Net.siteOf(host))) return;
+                v.stopLoading();
+                if (sentBack.incrementAndGet() > 3) {
+                    log("LEFT the site again; giving up on this page", u);
+                    v.loadUrl("about:blank");
+                } else {
+                    log("LEFT the site; sent back", u);
+                    if (v.canGoBack()) v.goBack(); else v.loadUrl(startUrl);
+                }
+            }
+
+            @Override
+            public void onPageFinished(WebView v, String u) {
+                if (u != null && !u.startsWith("about:")) loaded.countDown();
             }
         });
 
         w.setWebChromeClient(new WebChromeClient() {
             @Override
-            public boolean onCreateWindow(WebView v, boolean dialog, boolean gesture, Message m) { return false; }
+            public boolean onCreateWindow(WebView v, boolean dialog, boolean gesture, Message m) {
+                log("BLOCKED popup / new window", null);
+                return false;
+            }
 
             @Override
-            public void onPermissionRequest(PermissionRequest r) { r.deny(); }
+            public void onPermissionRequest(PermissionRequest r) { log("DENIED permission request", r.getOrigin().toString()); r.deny(); }
 
             @Override
             public void onGeolocationPermissionsShowPrompt(String origin, GeolocationPermissions.Callback cb) {
@@ -274,7 +383,7 @@ final class Scraper {
             }
 
             @Override
-            public boolean onJsAlert(WebView v, String url, String msg, JsResult r) { r.cancel(); return true; }
+            public boolean onJsAlert(WebView v, String url, String msg, JsResult r) { log("BLOCKED alert dialog", null); r.cancel(); return true; }
 
             @Override
             public boolean onJsConfirm(WebView v, String url, String msg, JsResult r) { r.cancel(); return true; }
