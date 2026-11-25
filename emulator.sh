@@ -66,7 +66,11 @@ launch() {
 case "${1:-}" in
   ""|start)
     setup; boot
-    tmp=$(mktemp -d); curl -fsSL -o "$tmp/app.apk" "$APK_URL"; install_apk "$tmp/app.apk"; rm -rf "$tmp"
+    tmp=$(mktemp -d)
+    # Retry: while GitHub is publishing a new build, the download briefly returns 404.
+    curl -fsSL --retry 12 --retry-delay 5 --retry-all-errors -o "$tmp/app.apk" "$APK_URL" \
+      || { echo "Couldn't download the app. Is the Build APK action still running? Try again in a minute."; exit 1; }
+    install_apk "$tmp/app.apk"; rm -rf "$tmp"
     launch ;;
   local)
     setup; boot
