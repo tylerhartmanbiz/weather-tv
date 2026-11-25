@@ -84,6 +84,8 @@ The video website is treated as hostile.
 
 Not needed for the TV. `./helper.sh open tt0993846 [season episode]` tests a site's Open link
 from a Mac (sandboxed Chromium). `./helper.sh diagnose tt0993846 [season episode]` finds out
-why a title won't play on the TV and writes a report to `debug/diagnose-report.txt` (git-ignored).
+why a title won't play on the TV and writes a report to `debug/output/` (git-ignored).
+`./helper.sh watch tt0993846 [season episode]` does the same in a browser window you can watch
+(each step, each click, and every video link found), and saves a screen recording there too.
 `server.py` and `imdb.py` are leftovers from the old
 computer-based version and can be deleted.

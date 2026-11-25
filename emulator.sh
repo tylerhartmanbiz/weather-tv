@@ -6,7 +6,7 @@
 #   ./emulator.sh            start the virtual TV with the released app (what the Fire TV gets)
 #   ./emulator.sh local      build the app from this folder and test that instead (before pushing)
 #   ./emulator.sh logs       watch what the app does: video links found, popups/downloads/redirects blocked
-#   ./emulator.sh logs FILE  same, but save to FILE instead of the screen (e.g. debug/tv-log.txt)
+#   ./emulator.sh logs FILE  same, but save to FILE instead of the screen (e.g. debug/output/tv-log.txt)
 #   ./emulator.sh stop       turn the virtual TV off
 #
 # Remote control = your keyboard, with the emulator window focused:

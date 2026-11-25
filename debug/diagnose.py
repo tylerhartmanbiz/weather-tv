@@ -2,6 +2,9 @@
 
     ./helper.sh diagnose tt0993846              a movie
     ./helper.sh diagnose tt0903747 1 2          a TV episode (season 1, episode 2)
+    ./helper.sh watch tt0993846                 the same, in a browser window you can watch:
+                                                a bar at the top shows each step, a red dot
+                                                shows each click, and the video links found
 
 It reads your real settings (docs/config-noclaude.json, falling back to docs/config.json),
 opens the Open link in the same kind of locked-down sandbox the TV uses (sandboxed Chromium,
@@ -16,13 +19,15 @@ same four steps the TV takes:
 When a step fails, it tries alternatives to find out why (other user-agent, Referer, a
 second click, waiting longer, links without .m3u8/.mp4 in their name, players in iframes).
 
-Everything goes to a report file (default debug/diagnose-report.txt, git-ignored), never to
-the screen. The SUMMARY at the top of the report has no web addresses in it: just which step
-failed and a short CAUSE code. The DETAILS below it do contain addresses.
+Everything goes to a report file (default debug/output/diagnose-report.txt, git-ignored), never to
+the screen (watch mode also saves a screen recording in debug/output/videos/). The SUMMARY
+at the top of the report has no web addresses in it: just which step failed and a short
+CAUSE code. The DETAILS below it do contain addresses.
 
 Options: --config FILE   use another settings file
          --out FILE      write the report somewhere else
          --ua desktop    pretend to be desktop Chrome instead of the Fire TV
+         --watch         show the browser window (what ./helper.sh watch does)
 """
 import argparse
 import ipaddress
@@ -38,7 +43,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from playwright.sync_api import sync_playwright
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 APP_ORIGIN = "https://tylerhartmanbiz.github.io"
 APP_PAGE = APP_ORIGIN + "/weather-tv/"
 # What the TV's hidden browser (Android WebView on a Fire TV) and its Java code look like.
@@ -63,6 +68,57 @@ SCAN_JS = r"""() => { const o = [];
   return o.filter(s => s.startsWith('https://') && /\.(m3u8|mp4)$/i.test(new URL(s).pathname)); }"""
 PLAY_JS = """() => { try { document.querySelectorAll('video').forEach(v => {
   v.muted = true; const p = v.play(); if (p && p.catch) p.catch(() => {}); }); } catch (x) {} }"""
+# --watch: an overlay drawn on top of the page (it ignores the mouse, so clicks still reach the
+# page underneath). Lives in a shadow root, so the page's HTML (what the TV scans) doesn't change.
+OVERLAY_JS = r"""(a) => {
+  let host = document.getElementById('__tv_diagnose');
+  if (!host) {
+    host = document.createElement('div'); host.id = '__tv_diagnose';
+    host.style.cssText = 'position:fixed;inset:0;z-index:2147483647;pointer-events:none';
+    (document.body || document.documentElement).appendChild(host);
+    host.attachShadow({mode: 'open'}).innerHTML = `<style>
+      :host { all: initial; }
+      * { box-sizing: border-box; font-family: -apple-system, Helvetica, sans-serif; text-align: left; }
+      .bar { position: fixed; left: 0; right: 0; top: 0; padding: 8px 14px; background: rgba(0,0,0,.85);
+             color: #fff; font-size: 16px; line-height: 1.35; border-bottom: 3px solid #ffd54a; }
+      .bar.ok { border-color: #3ddc84; } .bar.bad { border-color: #ff4d4d; }
+      .step { font-weight: 700; font-size: 19px; } .step span { color: #ffd54a; font-weight: 400; }
+      .n { color: #ffd54a; font-weight: 700; } .n.yes { color: #3ddc84; } .feed { color: #bbb; font-size: 13px; }
+      .links div { color: #7cfc9a; font: 12px ui-monospace, Menlo, monospace; white-space: nowrap;
+                   overflow: hidden; text-overflow: ellipsis; }
+      .cross { position: fixed; left: 50%; top: 50%; width: 44px; height: 44px; margin: -22px 0 0 -22px;
+               border: 2px dashed #ffd54a; border-radius: 50%; }
+      .cross::after { content: ''; position: absolute; left: 50%; top: 50%; width: 6px; height: 6px;
+                      margin: -3px 0 0 -3px; background: #ffd54a; border-radius: 50%; }
+      .dot { position: fixed; left: 50%; top: 50%; width: 40px; height: 40px; margin: -20px 0 0 -20px;
+             border-radius: 50%; background: rgba(255,50,50,.55); border: 3px solid #ff3030;
+             animation: pop 1.6s ease-out forwards; }
+      .tag { position: fixed; left: 50%; top: 50%; margin: 30px 0 0 -40px; width: 80px; text-align: center;
+             color: #fff; background: #ff3030; border-radius: 4px; font-weight: 700; font-size: 14px;
+             animation: fade 2.5s forwards; }
+      @keyframes pop { to { transform: scale(3); opacity: 0; } }
+      @keyframes fade { 70% { opacity: 1; } to { opacity: 0; } }
+    </style><div class="bar"><div class="step"></div><div class="info"></div><div class="feed"></div>
+    <div class="links"></div></div><div class="cross"></div>`;
+  }
+  const r = host.shadowRoot, bar = r.querySelector('.bar');
+  bar.className = 'bar ' + (a.mood || '');
+  r.querySelector('.step').textContent = a.step + ' ';
+  const t = document.createElement('span'); t.textContent = a.time; r.querySelector('.step').appendChild(t);
+  r.querySelector('.info').innerHTML = '';
+  const n = document.createElement('span'); n.className = a.links.length ? 'n yes' : 'n';
+  n.textContent = a.links.length ? `${a.links.length} video link(s) found` : 'no video link yet';
+  r.querySelector('.info').append(n, ` · ${a.popups} popup(s) blocked · ${a.blocked} other-site page(s) blocked`);
+  r.querySelector('.feed').textContent = a.feed.join('  ·  ');
+  const l = r.querySelector('.links'); l.innerHTML = '';
+  a.links.slice(-4).forEach(u => { const e = document.createElement('div'); e.textContent = '▶ ' + u; l.appendChild(e); });
+  if (a.click) {
+    r.querySelectorAll('.dot,.tag').forEach(e => e.remove());
+    const dot = document.createElement('div'); dot.className = 'dot';
+    const tag = document.createElement('div'); tag.className = 'tag'; tag.textContent = 'CLICK ' + a.click;
+    r.append(dot, tag);
+  }
+}"""
 CHALLENGE = re.compile(r"just a moment|cf-challenge|challenge-platform|captcha|are you a robot|"
                        r"verify you are human|access denied|attention required", re.I)
 
@@ -281,7 +337,7 @@ def cors_ok(resp):
 
 # ---------------------------------------------------------------- the sandboxed visit (like Scraper.scrape)
 
-def visit(url, ua):
+def visit(url, ua, watch=False, video_dir=None):
     site = site_of(urlparse(url).hostname)
     ev = {"tv_found": [], "media_no_ext": [], "blocked_main": [], "blocked_http": 0, "popups": 0,
           "popups_after_click": 0, "main_status": None, "main_error": "", "title": "", "challenge": False,
@@ -290,6 +346,8 @@ def visit(url, ua):
     t0 = time.time()
     responses = []
     clicked = [False]
+    feed = []                 # --watch: recent events, shown on the overlay
+    status = ["Opening the page…", ""]
 
     def now():
         return round(time.time() - t0, 1)
@@ -306,6 +364,7 @@ def visit(url, ua):
         if path.endswith(VIDEO_EXT):                      # what the TV notices
             if req.url not in [u for _, u in ev["tv_found"]]:
                 ev["tv_found"].append((now(), req.url))
+                feed.append(f"{now()}s video link noticed (not downloaded)")
             return r.abort()
         if req.resource_type == "media":                  # a video the TV would NOT notice
             ev["media_no_ext"].append((now(), req.url))
@@ -318,22 +377,26 @@ def visit(url, ua):
             main = False
         if req.resource_type == "document" and main and site_of(p.hostname) != site:
             ev["blocked_main"].append((now(), req.url))
+            feed.append(f"{now()}s BLOCKED going to another site")
             return r.abort()
         return r.continue_()
 
     with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True, chromium_sandbox=True,
+        browser = pw.chromium.launch(headless=not watch, chromium_sandbox=True,
                                      args=["--disable-extensions", "--disable-background-networking",
                                            "--autoplay-policy=no-user-gesture-required"])
+        rec = {"record_video_dir": str(video_dir), "record_video_size": {"width": 1280, "height": 720}} \
+            if watch and video_dir else {}
         ctx = browser.new_context(accept_downloads=False, permissions=[], java_script_enabled=True,
                                   service_workers="block", viewport={"width": 1280, "height": 720},
-                                  user_agent=ua)
+                                  user_agent=ua, **rec)
         ctx.route("**/*", route)
         page = ctx.new_page()
 
         def on_page(p):
             if p is not page:
                 ev["popups"] += 1
+                feed.append(f"{now()}s BLOCKED popup / new tab")
                 if clicked[0]:
                     ev["popups_after_click"] += 1
                 p.close()
@@ -341,15 +404,40 @@ def visit(url, ua):
         ctx.on("response", lambda resp: responses.append((now(), resp)))
         page.on("download", lambda d: d.cancel())
 
+        def overlay(click_n=0, mood=""):
+            if not watch:
+                return
+            try:
+                page.evaluate(OVERLAY_JS, {
+                    "step": status[0], "time": f"{now()} s" + (f" · {status[1]}" if status[1] else ""),
+                    "links": [u for _, u in ev["tv_found"]] + [u for u in ev["dom_main"]
+                                                             if u not in [x for _, x in ev["tv_found"]]],
+                    "popups": ev["popups"], "blocked": len(ev["blocked_main"]), "feed": feed[-3:],
+                    "click": click_n, "mood": mood or ("ok" if found() else "")})
+            except Exception:
+                pass   # page was navigating; drawn again on the next tick
+
+        def say(text):
+            status[0], status[1] = text, ""
+            overlay()
+
         def wait(seconds, until=lambda: False):
             end = time.time() + seconds
+            last = 0
             while time.time() < end and not until():
                 page.wait_for_timeout(250)
+                if watch and time.time() - last > 0.5:
+                    last = time.time()
+                    status[1] = f"{max(0, end - time.time()):.0f} s left" if seconds >= 2 else ""
+                    overlay()
+            status[1] = ""
             return bool(until())
 
         def click(n):
             clicked[0] = True
             ev["steps"].append(f"{now():5}s click {n} in the middle of the screen")
+            status[0] = f"Click {n} in the middle of the screen" + ("  (extra test, the TV doesn't do this)" if n > 2 else "")
+            overlay(click_n=n)
             try:
                 page.mouse.click(640, 360)
                 page.evaluate(PLAY_JS)
@@ -367,8 +455,9 @@ def visit(url, ua):
                         ev["dom_main"].append(u)
             except Exception:
                 pass
-            n = len(ev["tv_found"]) + len(ev["dom_main"])
+            n = len({u for _, u in ev["tv_found"]} | set(ev["dom_main"]))
             ev["steps"].append(f"{now():5}s looked for the video {when}: " + (f"{n} link(s)" if n else "none yet"))
+            say(f"Looked for the video {when}: " + (f"FOUND {n} link(s)" if n else "none yet"))
             return found()
 
         try:
@@ -379,6 +468,7 @@ def visit(url, ua):
                 ev["main_error"] = str(e).splitlines()[0][:200]
             # The TV: wait for the page to load (max 10 s), click the middle, wait 5 s, click the
             # middle again, wait 10 s. Look after every step; stop as soon as a video is found.
+            say("Waiting for the page to load (max 10 s)…")
             try:
                 page.wait_for_load_state("load", timeout=10000)
             except Exception:
@@ -386,10 +476,15 @@ def visit(url, ua):
             if not look("after loading"):
                 ev["before_clicks"] = 0
                 click(1)
-                if not look("after click 1") and not (wait(5, found) or look("5 s after click 1")):
+                if not look("after click 1") and not (say("Waiting 5 s after click 1…") or wait(5, found)
+                                                       or look("5 s after click 1")):
                     click(2)
-                    if not look("after click 2") and not (wait(10, found) or look("10 s after click 2")):
+                    if not look("after click 2") and not (say("Waiting 10 s after click 2…") or wait(10, found)
+                                                           or look("10 s after click 2")):
                         ev["steps"].append(f"{now():5}s NO VIDEO FOUND: the TV shows its error here")
+                        say("NO VIDEO FOUND: here the TV gives up and shows its error")
+                        overlay(mood="bad")
+                        wait(3 if watch else 0)
             else:
                 ev["before_clicks"] = len(ev["tv_found"]) + len(ev["dom_main"])
             if found():
@@ -411,6 +506,7 @@ def visit(url, ua):
             # Beyond what the TV does: if nothing yet, click a third time, then wait longer.
             if not found():
                 click(3)
+                status[0] = "Extra test (not on the TV): waiting 20 s more after a 3rd click…"
                 wait(10, lambda: ev["tv_found"])
                 ev["extra_click"] = list(ev["tv_found"])
                 wait(10, lambda: ev["tv_found"])
@@ -432,10 +528,23 @@ def visit(url, ua):
                 except Exception:
                     pass
             ev["tv_window"] = tv_window
+            if watch:
+                n = len({u for _, u in ev["tv_found"]} | set(ev["dom_main"]))
+                say(f"Done: {n} video link(s) found. Next the stream is checked; see the report."
+                    if n else "Done: no video link found. See the report.")
+                overlay(mood="ok" if n else "bad")
+                input("\nWatching done. Look around the browser window if you like, then press Enter here to "
+                      "close it and finish the report... ")
         except Exception as e:
             ev["error"] = f"{type(e).__name__}: {str(e).splitlines()[0][:200]}"
         finally:
+            video = page.video if watch and video_dir else None
             ctx.close()
+            if video:
+                try:
+                    ev["video_file"] = video.path()
+                except Exception:
+                    pass
             browser.close()
     return ev
 
@@ -476,7 +585,7 @@ CAUSES = {
     "PLAY_NO_CORS": "The stream server doesn't allow other websites to read the stream (no CORS "
                     "header), so the app's player on github.io is blocked by the browser.",
     "ALL_PASS": "Every step works from this Mac. The problem is likely specific to the TV / "
-                "emulator. Run ./emulator.sh logs debug/tv-log.txt while pressing Open on the "
+                "emulator. Run ./emulator.sh logs debug/output/tv-log.txt while pressing Open on the "
                 "emulator.",
 }
 
@@ -487,8 +596,9 @@ def main():
     ap.add_argument("season", nargs="?")
     ap.add_argument("episode", nargs="?")
     ap.add_argument("--config")
-    ap.add_argument("--out", default=str(ROOT / "debug" / "diagnose-report.txt"))
+    ap.add_argument("--out", default=str(ROOT / "debug" / "output" / "diagnose-report.txt"))
     ap.add_argument("--ua", choices=["tv", "desktop"], default="tv")
+    ap.add_argument("--watch", action="store_true", help="show the browser window, with an overlay of each step")
     a = ap.parse_args()
 
     summary, details, cause = [], [], [None]
@@ -532,9 +642,12 @@ def main():
         step("0. settings", True, f"using {cfg_path.name}, {'TV episode' if is_tv else 'movie'} link")
     detail("== 0. settings", f"file: {cfg_path}", f"Open link: {url or '(none)'}", "")
 
+    ev = {}
     if not cause[0]:
         ua = TV_UA if a.ua == "tv" else DESKTOP_UA
-        ev = visit(url, ua)
+        if a.watch:
+            print("Opening a browser window: watch the yellow bar at the top for each step.")
+        ev = visit(url, ua, watch=a.watch, video_dir=out.parent / "videos")
         tv_found = [(t, u) for t, u in ev["tv_found"] if t <= ev.get("tv_window", 0)]
 
         # ---- 1. page
@@ -705,6 +818,8 @@ def main():
     ]
     out.write_text("\n".join(report) + "\n")
     print(f"Done. Report written to {out}")
+    if ev.get("video_file"):
+        print(f"Screen recording of what the browser did: {ev['video_file']}")
 
 
 if __name__ == "__main__":
