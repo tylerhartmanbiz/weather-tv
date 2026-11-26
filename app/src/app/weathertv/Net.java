@@ -33,6 +33,11 @@ import javax.net.ssl.HttpsURLConnection;
 final class Net {
     private Net() { }
 
+    /** A request refused for safety (not a network failure): never retried. */
+    static final class Refused extends IOException {
+        Refused(String m) { super(m); }
+    }
+
     private static final Pattern HOST_RE =
             Pattern.compile("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$");
     private static final String[] LOCAL_SUFFIXES =
@@ -72,7 +77,11 @@ final class Net {
         return true;
     }
 
-    /** True if every address the hostname resolves to is on the public internet. Cached. */
+    /**
+     * True if every address the hostname resolves to is on the public internet. Cached, except
+     * when the lookup itself failed (a DNS blip): that is tried again next time, otherwise one
+     * hiccup would block a stream host for the rest of the video.
+     */
     static boolean resolvesPublic(String host) {
         Boolean hit = PUBLIC_CACHE.get(host);
         if (hit != null) return hit;
@@ -82,7 +91,7 @@ final class Net {
             ok = all.length > 0;
             for (InetAddress a : all) if (!isPublicAddress(a)) ok = false;
         } catch (Exception e) {
-            ok = false;
+            return false;
         }
         if (PUBLIC_CACHE.size() > 2000) PUBLIC_CACHE.clear();
         PUBLIC_CACHE.put(host, ok);
@@ -175,9 +184,15 @@ final class Net {
      */
     static HttpsURLConnection openStream(String url, Map<String, String> headers, Set<String> hosts) throws IOException {
         for (int hop = 0; hop < 4; hop++) {
-            String host = checkUrl(url);
-            if (!hosts.contains(host)) throw new IOException("host not approved");
-            if (!resolvesPublic(host)) throw new IOException("not a public internet address");
+            String host;
+            try { host = checkUrl(url); } catch (IOException e) { throw new Refused(e.getMessage()); }
+            if (!hosts.contains(host)) throw new Refused("host not approved");
+            if (!resolvesPublic(host)) {
+                // Refuse for good only if the name really points somewhere private; a failed
+                // lookup is a network hiccup and gets retried.
+                if (PUBLIC_CACHE.containsKey(host)) throw new Refused("not a public internet address");
+                throw new IOException("DNS lookup failed");
+            }
             HttpsURLConnection c = (HttpsURLConnection) new URL(url).openConnection();
             c.setInstanceFollowRedirects(false);
             c.setConnectTimeout(10000);
@@ -195,7 +210,7 @@ final class Net {
             }
             return c;
         }
-        throw new IOException("too many redirects");
+        throw new Refused("too many redirects");
     }
 
     // ---------- HLS playlists (text only; video is never downloaded) ----------

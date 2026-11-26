@@ -342,6 +342,7 @@ async function openStream(t, season, episode) {
 // ---------- player ----------
 function stopVideo() {
   clearInterval(bufferTimer);
+  clearTimeout(recover.timer); recover.timer = null; attached = null;
   if (hls) { hls.destroy(); hls = null; }
   video.pause();
   video.removeAttribute('src');
@@ -349,8 +350,16 @@ function stopVideo() {
   video.load();
 }
 
-function attach(src) {
+// Stream requests that fail are retried (any HTTP status, not just 5xx: the app answers a
+// dropped connection with an error code too), with a growing pause between tries.
+const RETRY = (n, delay, maxDelay) => ({ maxNumRetry: n, retryDelayMs: delay, maxRetryDelayMs: maxDelay,
+  shouldRetry: (cfg, count) => count < cfg.maxNumRetry });
+const LOAD_POLICY = (ttfb, total, n) => ({ default: { maxTimeToFirstByteMs: ttfb, maxLoadTimeMs: total,
+  timeoutRetry: RETRY(n, 1000, 8000), errorRetry: RETRY(n, 1000, 8000) } });
+
+function attach(src, startAt) {
   stopVideo();
+  attached = src;
   const u = new URL(src);
   if (/\.m3u8$/i.test(u.pathname) && window.Hls && Hls.isSupported()) {
     // Best quality: lock to the highest resolution/bitrate the TV can decode (no automatic
@@ -362,7 +371,13 @@ function attach(src) {
       maxBufferLength: 90,
       maxMaxBufferLength: 180,
       maxBufferSize: 200 * 1000 * 1000,
+      startPosition: startAt > 0 ? startAt : -1,
+      fragLoadPolicy: LOAD_POLICY(20000, 120000, 6),
+      playlistLoadPolicy: LOAD_POLICY(20000, 30000, 6),
+      manifestLoadPolicy: LOAD_POLICY(20000, 30000, 6),
+      keyLoadPolicy: LOAD_POLICY(20000, 30000, 6),
     });
+    hls.on(Hls.Events.ERROR, (_, e) => { if (e.fatal) recover(e); });
     hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
       let best = 0;
       data.levels.forEach((l, i) => {
@@ -376,8 +391,56 @@ function attach(src) {
   } else {
     video.preload = 'auto';
     video.src = src; // .mp4, or native HLS
+    if (startAt > 0) video.addEventListener('loadedmetadata', () => { video.currentTime = startAt; }, { once: true });
   }
 }
+
+// ---------- keep a playing video going ----------
+// A stream that breaks while you watch (a network blip, the TV's Wi-Fi dropping, a stream
+// link that expired) is picked up again where it was, instead of ending on an error screen.
+// Only after it keeps failing does the error show; ▶ Open then continues from the same spot.
+const RECOVER_MAX = 5;              // reloads per 10 minutes before giving up
+let attached = null, recoverTimes = [], resumeAt = null;
+function recover(e) {
+  if (screen === 'loader') { stopVideo(); loader('The video failed to load.', null); return; }   // still loading the first 30 s
+  if (!attached || recover.timer) return;
+  const now = Date.now();
+  recoverTimes = recoverTimes.filter(t => now - t < 600000);
+  if (recoverTimes.length >= RECOVER_MAX) return giveUp();
+  recoverTimes.push(now);
+  const n = recoverTimes.length;
+  // A decoding hiccup: hls.js can fix it in place.
+  if (e && hls && e.type === Hls.ErrorTypes.MEDIA_ERROR && n <= 3) {
+    if (n === 2) hls.swapAudioCodec();
+    hls.recoverMediaError();
+    return;
+  }
+  // The stream itself stopped: load it again (fresh playlist) from the same spot.
+  const pos = video.currentTime, play = !video.paused, src = attached, token = openToken;
+  status(`Reconnecting… (${n})`);
+  recover.timer = setTimeout(() => {
+    recover.timer = null;
+    if (token !== openToken || attached !== src || screen === 'loader') return;
+    attach(src, pos);
+    if (play) video.play().catch(() => {});
+  }, Math.min(30000, 1000 * 2 ** (n - 1)));
+}
+function giveUp() {
+  if (!opened) { recoverTimes = []; return play(index); }   // default video list: just start it again
+  if (opened) resumeAt = { label: opened.label, time: video.currentTime };
+  stopVideo();
+  show('loader');
+  $('ltitle').textContent = opened ? opened.label : '';
+  loader('The video stopped playing (the stream stopped answering). Press Back, then ▶ Open: it continues where it stopped.', null);
+}
+function status(text) { if (screen !== 'player') return; msg.style.display = 'flex'; msg.textContent = text; }
+// Watchdog: playing but the picture hasn't moved for 30 s = stuck, reload it.
+let wdTime = -1, wdSince = 0;
+setInterval(() => {
+  if (screen === 'loader' || !attached || video.paused || video.ended) { wdTime = -1; return; }
+  if (video.currentTime !== wdTime) { wdTime = video.currentTime; wdSince = Date.now(); return; }
+  if (Date.now() - wdSince > 30000) { wdTime = -1; recover(null); }
+}, 2000);
 
 function showInfo() {
   info.classList.remove('fade');
@@ -399,6 +462,7 @@ function play(i) {   // the default video list (videos.json)
 }
 
 video.addEventListener('playing', () => { msg.style.display = 'none'; });
+video.addEventListener('error', () => { if (screen !== 'loader' && !hls) recover(null); });   // .mp4 / native HLS
 video.addEventListener('ended', () => {
   if (opened) { stopVideo(); openDetail(opened); }
   else if (videos.length) play(index + 1);
@@ -634,8 +698,10 @@ async function openVideo() {
   const item = list[0];
   opened = t;
   loader(`Loading ${item.quality || 'best'} quality…`, 0);
-  attach(item.src);
-  if (hls) hls.on(Hls.Events.ERROR, (_, e) => { if (e.fatal && token === openToken) { stopVideo(); loader('The video failed to load.', null); } });
+  const startAt = resumeAt && resumeAt.label === t.label ? resumeAt.time : 0;
+  resumeAt = null; recoverTimes = [];
+  if (startAt) loader(`Loading ${item.quality || 'best'} quality… (continuing at ${Math.floor(startAt / 60)}:${String(Math.floor(startAt % 60)).padStart(2, '0')})`, 0);
+  attach(item.src, startAt);
   video.onerror = () => { if (token === openToken && screen === 'loader') loader('The video failed to load.', null); };
 
   // Wait until BUFFER_SECONDS of video (or the whole thing, if shorter) is loaded, showing %.

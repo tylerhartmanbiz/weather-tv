@@ -438,9 +438,15 @@ public class MainActivity extends Activity {
             if (code >= 400) Scraper.log("stream server answered HTTP " + code, url);
             String msg = c.getResponseMessage();
             return new WebResourceResponse(type, null, code, msg == null || msg.isEmpty() ? "OK" : msg, out, in);
-        } catch (Exception e) {
+        } catch (Net.Refused e) {
             Scraper.log("stream request refused (" + e.getMessage() + ")", url);
             return Scraper.blocked();
+        } catch (Exception e) {
+            // A network hiccup (timeout, dropped connection, DNS blip), not a safety refusal:
+            // answer 504 so the player retries instead of giving up on the whole video.
+            Scraper.log("stream request failed, player will retry (" + e.getMessage() + ")", url);
+            return new WebResourceResponse("text/plain", "utf-8", 504, "Gateway Timeout", null,
+                    new ByteArrayInputStream(new byte[0]));
         }
     }
 
