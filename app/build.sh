@@ -11,9 +11,11 @@ $BT/aapt2 compile --dir res -o build/res.zip
 VERSION_CODE=${VERSION_CODE:-$(( $(date +%s) / 60 ))}
 $BT/aapt2 link -o build/base.apk -I $JAR --manifest AndroidManifest.xml build/res.zip \
   --version-code "$VERSION_CODE" --version-name "2.$VERSION_CODE" --replace-version
-javac -source 8 -target 8 -bootclasspath $JAR -d build/classes $(find src -name '*.java')
+# libs/: AndroidX WebKit (one plain jar, no other dependencies): scripts in every frame of the website.
+LIBS=$(ls libs/*.jar | tr '\n' ':')
+javac -source 8 -target 8 -bootclasspath $JAR -classpath "$LIBS" -d build/classes $(find src -name '*.java')
 (cd build/classes && jar cf ../classes.jar .)
-$BT/d8 --min-api 22 --lib $JAR --output build/dex build/classes.jar
+$BT/d8 --min-api 22 --lib $JAR --output build/dex build/classes.jar libs/*.jar
 cp build/base.apk build/unsigned.apk && (cd build/dex && zip -q ../unsigned.apk classes.dex)
 $BT/zipalign -f -p 4 build/unsigned.apk build/aligned.apk
 $BT/apksigner sign --ks "$KEYSTORE" --ks-type PKCS12 --ks-pass env:KEYSTORE_PASS --out build/weather-tv.apk build/aligned.apk

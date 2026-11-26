@@ -191,6 +191,15 @@ final class Scraper {
     static volatile Events events;
     private static volatile boolean controller;
 
+    /**
+     * docs/site-nav.js, sent by site-control.js when the app starts (it's live too): put into every
+     * page and embedded frame of the website before the site's scripts. It removes overlays and
+     * moves between the site's buttons in button mode.
+     */
+    static volatile String navJs = null;
+    /** True when navJs reaches embedded frames too (document-start scripts), not just the main page. */
+    static volatile boolean navAllFrames = false;
+
     static void emit(String type, String fields) {
         Events e = events;
         if (e != null) e.send("{\"type\":\"" + type + "\"" + (fields == null ? "" : "," + fields) + "}");
@@ -403,10 +412,21 @@ final class Scraper {
      *   scroll&dx=&dy=        scroll the page (CSS pixels)
      *   hint&text=            show a bar with text at the bottom (empty text hides it)
      *   close                 close the website (like Back)
+     *   focus                 give the page keyboard focus (with a visible focus outline)
+     *   navscript&src=        the page script (site-nav.js) for websites opened from now on
+     *   key&code=[&shift=1]   press a key on the page: left right up down enter space tab
+     *                         escape pageup pagedown home end (the arrows move between the
+     *                         page's buttons, sliders take left/right, like a TV browser)
      */
     static String command(final Activity act, final FrameLayout root, final Uri u) throws InterruptedException {
         final String op = u.getQueryParameter("op") == null ? "" : u.getQueryParameter("op");
-        final String[] out = {"{\"open\":false}"};
+        if ("navscript".equals(op)) {                       // works with no website open
+            String src = u.getQueryParameter("src");
+            navJs = src == null || src.isEmpty() || src.length() > 200000 ? null : src;
+            log("site-nav.js " + (navJs == null ? "cleared" : "received (" + navJs.length() + " characters)"), null);
+            return "{\"open\":" + (current != null) + ",\"nav\":true}";
+        }
+        final String[] out = {"{\"open\":false,\"nav\":true}"};
         final CountDownLatch done = new CountDownLatch(1);
         act.runOnUiThread(new Runnable() { public void run() {
             try {
@@ -429,15 +449,62 @@ final class Scraper {
                 }
                 else if ("hint".equals(op)) showHint(act, root, s, u.getQueryParameter("text"));
                 else if ("close".equals(op)) { if (s.dragging) endDrag(s); s.ended = "cancelled"; }
+                else if ("focus".equals(op)) focusPage(s);
+                else if ("key".equals(op)) {
+                    int code = keyCode(u.getQueryParameter("code"));
+                    if (code != 0) {
+                        if (s.dragging) endDrag(s);
+                        focusPage(s);
+                        int meta = "1".equals(u.getQueryParameter("shift")) ? KeyEvent.META_SHIFT_ON | KeyEvent.META_SHIFT_LEFT_ON : 0;
+                        long t = SystemClock.uptimeMillis();
+                        s.web.dispatchKeyEvent(new KeyEvent(t, t, KeyEvent.ACTION_DOWN, code, 0, meta));
+                        s.web.dispatchKeyEvent(new KeyEvent(t, t + 30, KeyEvent.ACTION_UP, code, 0, meta));
+                    }
+                }
                 out[0] = "{\"open\":true,\"w\":" + c.getWidth() + ",\"h\":" + c.getHeight() + ",\"x\":" + c.x
                         + ",\"y\":" + c.y + ",\"dragging\":" + s.dragging + ",\"density\":"
-                        + act.getResources().getDisplayMetrics().density + "}";
+                        + act.getResources().getDisplayMetrics().density + ",\"nav\":true,\"navReady\":" + (navJs != null)
+                        + ",\"navFrames\":" + navAllFrames + "}";
             } finally {
                 done.countDown();
             }
         }});
         done.await(2, TimeUnit.SECONDS);
         return out[0];
+    }
+
+    /** Keys site-control.js may press on the page (nothing else). */
+    private static int keyCode(String name) {
+        if (name == null) return 0;
+        switch (name) {
+            case "left": return KeyEvent.KEYCODE_DPAD_LEFT;
+            case "right": return KeyEvent.KEYCODE_DPAD_RIGHT;
+            case "up": return KeyEvent.KEYCODE_DPAD_UP;
+            case "down": return KeyEvent.KEYCODE_DPAD_DOWN;
+            case "enter": return KeyEvent.KEYCODE_ENTER;
+            case "space": return KeyEvent.KEYCODE_SPACE;
+            case "tab": return KeyEvent.KEYCODE_TAB;
+            case "escape": return KeyEvent.KEYCODE_ESCAPE;
+            case "pageup": return KeyEvent.KEYCODE_PAGE_UP;
+            case "pagedown": return KeyEvent.KEYCODE_PAGE_DOWN;
+            case "home": return KeyEvent.KEYCODE_MOVE_HOME;
+            case "end": return KeyEvent.KEYCODE_MOVE_END;
+            default: return 0;
+        }
+    }
+
+    /** The page's focused button is outlined (the site's own styles often hide it). */
+    private static final String FOCUS_CSS_JS = "(function(){try{if(document.getElementById('__vtvfocus'))return;"
+            + "var st=document.createElement('style');st.id='__vtvfocus';"
+            + "st.textContent='*:focus{outline:4px solid #3d7cff !important;outline-offset:2px !important;"
+            + "box-shadow:0 0 0 6px rgba(61,124,255,.45) !important}';"
+            + "(document.head||document.documentElement).appendChild(st)}catch(e){}})()";
+
+    /** Let the page take keyboard focus (it can't otherwise, so stray keys never reach it). */
+    private static void focusPage(Session s) {
+        if (!s.web.isFocusable()) { s.web.setFocusable(true); s.web.setFocusableInTouchMode(true); }
+        if (!s.web.isFocused()) s.web.requestFocus();
+        s.web.evaluateJavascript(FOCUS_CSS_JS, null);
     }
 
     private static float num(Uri u, String k, float dflt) {
@@ -705,6 +772,19 @@ final class Scraper {
         w.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
         if (Methods.on(Methods.SOFTWARE)) w.setLayerType(View.LAYER_TYPE_SOFTWARE, null);
 
+        final String nav = navJs;
+        navAllFrames = false;
+        if (nav != null) {
+            try {
+                if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                    androidx.webkit.WebViewCompat.addDocumentStartJavaScript(w, nav, Collections.singleton("*"));
+                    navAllFrames = true;
+                    log("page script: in every page and frame", null);
+                }
+            } catch (Throwable t) {
+                log("page script: only the main page (" + t + ")", null);
+            }
+        }
         WebSettings s = w.getSettings();
         s.setJavaScriptEnabled(true);          // the site's player needs it; it runs sandboxed
         s.setDomStorageEnabled(true);          // wiped afterwards
@@ -810,6 +890,7 @@ final class Scraper {
 
             @Override
             public void onPageStarted(WebView v, String u, Bitmap icon) {
+                if (nav != null && !navAllFrames && u != null && !u.startsWith("about:")) v.evaluateJavascript(nav, null);
                 if (u != null && !u.startsWith("about:")) {
                     if (Methods.on(Methods.STEALTH)) v.evaluateJavascript(STEALTH_JS, null);
                     if (sniff) v.evaluateJavascript(SNIFF_JS, null);
@@ -834,6 +915,7 @@ final class Scraper {
 
             @Override
             public void onPageFinished(WebView v, String u) {
+                if (nav != null && !navAllFrames && u != null && !u.startsWith("about:")) v.evaluateJavascript(nav, null);
                 if (sniff && u != null && !u.startsWith("about:")) v.evaluateJavascript(SNIFF_JS, null);
                 if (testing) log("page finished loading", u);
                 if (u != null && !u.startsWith("about:")) emit("loaded", null);

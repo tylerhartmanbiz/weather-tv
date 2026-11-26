@@ -5,6 +5,15 @@
 // its sandbox: move the cursor, tap, put the "finger" down / lift it, scroll, show a text bar,
 // close. Everything about WHEN and HOW is decided here.
 //
+// Two modes (press OK 3 times quickly to switch). The website opens in button mode.
+//   cursor mode   a round cursor: arrows move it, OK clicks, hold OK to drag
+//   button mode   no cursor: arrows jump between the site's own buttons (play, timeline, captions,
+//                 settings...), like a TV browser. On a timeline / volume slider, ◀ ▶ change it
+//                 and ▲ ▼ leave it (OK on a slider: ◀ ▶ go past it). OK presses the outlined button.
+//                 ⏪ ⏩ jump to the previous / next button in page order.
+//                 How it finds the buttons: site-nav.js, which the app puts into the website. That
+//                 file also removes overlays (popups, ad layers over the video) in both modes.
+//
 // Hold Back for 3 seconds to close the website even if this file is broken.
 (function () {
   'use strict';
@@ -21,6 +30,9 @@
     // Hide the round cursor after this long without a button press (null = always show).
     // The next arrow / OK press only brings it back, in the same place.
     hideCursorAfterMs: 5000,
+    multiPressMs: 400,        // OK presses this close together count as a triple press (switch mode)
+    modeHintMs: 3500,         // how long the "button mode" / "cursor mode" note shows
+    startMode: 'buttons',     // 'buttons' or 'cursor': the mode the website opens in
   };
 
   // ---------- talking to the app ----------
@@ -41,12 +53,57 @@
   // ---------- behaviour ----------
   let autoDone = false;
   let okStartedDrag = false;   // this OK press began the drag (its release keeps holding)
+  let mode = 'cursor';         // 'cursor' | 'buttons'
+
+  // ---------- OK pressed 3 times quickly = switch mode ----------
+  // Each press waits that long before it clicks, so a triple press never clicks anything.
+  let okCount = 0, lastOkAt = 0, pendingOk = null, pendingFns = [], hintTimer = null;
+  function countOk() {           // on each new OK press; true = it was the 3rd (mode switched)
+    const now = Date.now();
+    okCount = now - lastOkAt < S.multiPressMs ? okCount + 1 : 1;
+    lastOkAt = now;
+    if (okCount < 3) return false;
+    okCount = 0;
+    clearTimeout(pendingOk); pendingOk = null; pendingFns = [];
+    if (mode === 'cursor' && !(state.nav && state.navReady)) {   // older app: only cursor mode
+      note('Button mode needs the newest app version');
+      return true;
+    }
+    setMode(mode === 'cursor' ? 'buttons' : 'cursor');
+    return true;
+  }
+  function okAction(fn) {        // on OK release: do it once it's clear this isn't a triple press
+    pendingFns.push(fn);
+    clearTimeout(pendingOk);
+    pendingOk = setTimeout(() => { pendingOk = null; const f = pendingFns; pendingFns = []; f.forEach(g => g()); },
+      Math.max(0, S.multiPressMs - (Date.now() - lastOkAt)));
+  }
+  function note(text) {
+    clearTimeout(hintTimer);
+    cmd('hint', { text });
+    hintTimer = setTimeout(() => cmd('hint', { text: S.hint }), S.modeHintMs);
+  }
+  function setMode(m) {
+    mode = m;
+    clearTimeout(hideTimer);
+    if (holding) cmd('up');
+    if (m === 'buttons') {
+      if (!hiddenAt && state.w) hiddenAt = { x: state.x, y: state.y };
+      if (state.w) cmd('cursor', { x: state.w + 500, y: state.h + 500 });   // cursor off screen
+      cmd('focus');
+      note('Button mode: ◀ ▲ ▼ ▶ move between buttons · OK press · OK ×3 = cursor');
+    } else {
+      if (!reveal()) cmd('center');
+      idle();
+      note('Cursor mode · OK ×3 = button mode');
+    }
+  }
 
   // ---------- hiding the cursor when the remote isn't used ----------
   let hideTimer = null, hiddenAt = null;   // hiddenAt = where the cursor was when hidden
   function idle() {
     clearTimeout(hideTimer);
-    if (S.hideCursorAfterMs == null) return;
+    if (S.hideCursorAfterMs == null || mode !== 'cursor') return;
     hideTimer = setTimeout(() => {
       if (hiddenAt || !state.open || !state.w) return;
       hiddenAt = { x: state.x, y: state.y };
@@ -55,7 +112,8 @@
   }
   function reveal() {          // true if the cursor was hidden (this press only shows it)
     if (!hiddenAt) return false;
-    cmd('cursor', hiddenAt);
+    if (state.w && (hiddenAt.x > state.w || hiddenAt.y > state.h)) cmd('center');   // was never on screen
+    else cmd('cursor', hiddenAt);
     hiddenAt = null;
     return true;
   }
@@ -63,10 +121,15 @@
   function onShown() {
     holding = false;
     hiddenAt = null;
+    mode = 'cursor';
+    okCount = 0; clearTimeout(pendingOk); pendingOk = null; pendingFns = []; clearTimeout(hintTimer);
     idle();
     autoDone = false;
     okStartedDrag = false;
-    cmd('hello');
+    cmd('hello').then(s => {
+      // Button mode needs the app version that can press keys on the website (s.nav).
+      if (S.startMode === 'buttons' && s && s.nav && s.navReady) setMode('buttons');
+    });
     if (S.hint) cmd('hint', { text: S.hint });
   }
 
@@ -78,7 +141,30 @@
     if (S.autoHold) setTimeout(() => cmd('down'), S.autoHoldAfterMs);
   }
 
+  function onButtonsKey(k) {     // button mode: real key presses on the page
+    switch (k.key) {
+      case 'left': case 'right': case 'up': case 'down':
+        if (k.down) cmd('key', { code: k.key });   // held = repeats (e.g. keeps seeking)
+        break;
+      case 'ok':
+        if (!k.down) okAction(() => cmd('key', { code: 'enter' }));
+        break;
+      case 'playpause':
+        if (k.down && k.repeat === 0) cmd('key', { code: 'space' });
+        break;
+      case 'rewind': case 'forward':                 // jump through the buttons in page order
+        if (k.down) cmd('key', { code: 'tab', shift: k.key === 'rewind' ? 1 : 0 });
+        break;
+      case 'back':
+        if (!k.down) cmd('close');
+        break;
+    }
+  }
+
   function onKey(k) {
+    if (k.key === 'ok' && k.down && k.repeat === 0 && countOk()) { swallow = 'ok'; return; }
+    if (swallow === 'ok' && k.key === 'ok') { if (!k.down) swallow = null; return; }
+    if (mode === 'buttons') { onButtonsKey(k); return; }
     idle();
     if (k.key !== 'back' && k.down && k.repeat === 0 && reveal()) { swallow = k.key; return; }
     if (swallow === k.key) { if (!k.down) swallow = null; return; }   // the rest of that press
@@ -99,7 +185,7 @@
         } else if (holding) {
           cmd('up');
         } else {
-          cmd('tap');
+          okAction(() => cmd('tap'));
         }
         break;
       case 'playpause':                     // also grabs / lets go
@@ -111,6 +197,10 @@
     }
   }
 
+  // The page script for the website (overlay remover + button mode), sent to the app once.
+  fetch('site-nav.js?t=' + Date.now(), { cache: 'no-store' }).then(r => r.ok ? r.text() : null)
+    .then(src => { if (src) cmd('navscript', { src }); }).catch(() => {});
+
   window.SiteControl = {
     settings: S,
     onEvent(ev) {
@@ -119,5 +209,6 @@
       else if (ev.type === 'key') onKey(ev);
       // also: 'loaded' (page finished), 'checking' / 'rejected' (a video link is being checked)
     },
+    get mode() { return mode; },
   };
 })();

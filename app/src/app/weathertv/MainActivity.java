@@ -401,6 +401,7 @@ public class MainActivity extends Activity {
                 }
             });
         }
+        runOnUiThread(new Runnable() { public void run() { web.requestFocus(); } });   // keys back to the app's page
         if (out.has("videos")) return out;
         out.put("videos", new JSONArray());
         out.put("error", "cancelled".equals(result) ? "Cancelled."

@@ -63,12 +63,13 @@ The APK is a thin shell. Everything you'd want to change is in `docs/` on GitHub
 | File | What it controls |
 |---|---|
 | `docs/index.html` | the app's screens: search, details, player |
-| `docs/site-control.js` | how the remote drives the video website: auto-click, hold mode, drag, cursor speed, help bar (settings at the top of the file) |
+| `docs/site-control.js` | how the remote drives the video website: auto-click, hold mode, drag, cursor speed, button / cursor mode (OK ×3 switches; opens in button mode), help bar (settings at the top of the file) |
+| `docs/site-nav.js` | runs inside the video website (every page and embedded frame): removes overlays, and in button mode moves between the site's own buttons |
 | `docs/config-noclaude.json` | the video website's address |
 
 Only changes under `app/` need a new APK (built by the *Build APK* GitHub Action): the
 sandbox's safety rules, and the basic actions `site-control.js` can ask for (move the cursor,
-tap, finger down/up, scroll, text bar, close). Hold **Back** for 3 seconds to close the website
+tap, finger down/up, scroll, text bar, close, press a key on the page). Hold **Back** for 3 seconds to close the website
 even if `site-control.js` is broken.
 
 ## Safety
