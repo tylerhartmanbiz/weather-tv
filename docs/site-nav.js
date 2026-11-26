@@ -304,69 +304,149 @@
   window.addEventListener('blur', () => { if (box) box.style.display = 'none'; });
   window.addEventListener('focus', ring);
   // ---------- overlays: removed, always (both modes, every page and frame) ----------
-  // Sites lay things over the page or the video: see-through "click catchers" that open ads,
-  // full-screen popups and dimmed backdrops. Anything like that is hidden as soon as it shows.
-  // The video player itself is kept: anything containing a video / player frame, and the player's
-  // own layers (inside the same player box as the video), stay.
-  const MEDIA = 'video,iframe,embed,object,canvas';
-  function hasMedia(e) { return e.matches(MEDIA) || !!e.querySelector(MEDIA); }
+  // Sites lay things over the page or the video: tinted "screens" with a QR code or a countdown
+  // X, popups, dimmed backdrops, see-through "click catchers" that open ads. Anything lying on
+  // top of the video or on top of the page is hidden as soon as it shows, and kept hidden.
+  // Kept: the player itself (anything that holds the video or a player-sized frame / canvas),
+  // the player's own controls, and normal page layout (something that isn't on top of anything).
   function isOurs(e) { return e.id === '__vtvRing'; }
+  function area(r) { return Math.max(0, r.width) * Math.max(0, r.height); }
   function coverage(r, m) {   // how much of rect m is covered by rect r (0..1)
     const w = Math.min(r.right, m.right) - Math.max(r.left, m.left), h = Math.min(r.bottom, m.bottom) - Math.max(r.top, m.top);
-    return w > 0 && h > 0 ? (w * h) / Math.max(1, m.width * m.height) : 0;
+    return w > 0 && h > 0 ? (w * h) / Math.max(1, area(m)) : 0;
+  }
+  function screenRect() { return { left: 0, top: 0, right: innerWidth, bottom: innerHeight, width: innerWidth, height: innerHeight }; }
+  // The video player: a video, or a frame / canvas / plugin big enough to be one. (A QR code
+  // drawn on a canvas, or a small ad frame, isn't.)
+  function isPlayer(m) {
+    if (!m || m.nodeType !== 1 || !m.matches('video,iframe,embed,object,canvas')) return false;
+    const a = area(m.getBoundingClientRect()), sa = innerWidth * innerHeight;
+    return m.tagName === 'VIDEO' ? a > sa * 0.03 : a > sa * 0.25;
+  }
+  function holdsPlayer(e) {
+    if (isPlayer(e)) return true;
+    for (const m of e.querySelectorAll('video,iframe,embed,object,canvas')) if (isPlayer(m)) return true;
+    return false;
   }
   function playerBox(m) {     // the player's own box: the video's ancestor that's about its size
     let box = m;
+    const v = area(m.getBoundingClientRect());
     for (let p = parentOf(m); p && p.nodeType === 1 && p !== document.body && p !== document.documentElement; p = parentOf(p)) {
-      const r = p.getBoundingClientRect(), v = m.getBoundingClientRect();
-      if (r.width * r.height > v.width * v.height * 2.2 + 20000) break;
+      if (area(p.getBoundingClientRect()) > v * 2.2 + 20000) break;
       box = p;
     }
     return box;
   }
-  function insideComposed(e, box) {
-    for (let x = e; x; x = parentOf(x)) if (x === box) return true;
+  function contains(a, b) {   // a contains b (through shadow roots too)
+    for (let x = b; x; x = parentOf(x)) if (x === a) return true;
     return false;
   }
+  // A see-through tint (e.g. 50% white or black) rather than buttons or a picture.
+  const tintSince = new WeakMap();
+  function lastingTint(e, st) {   // tinted for over 0.6 s (not just a player's fade-in / fade-out)
+    if (!tint(e, st)) { tintSince.delete(e); return false; }
+    const now = Date.now();
+    if (!tintSince.has(e)) { tintSince.set(e, now); soonAgain(); return false; }
+    return now - tintSince.get(e) > 600;
+  }
+  function tint(e, st) {
+    if (st.backgroundImage && st.backgroundImage !== 'none') return false;   // a poster / picture
+    if (e.querySelector('img,video,picture')) return false;
+    const m = /rgba?\(([^)]+)\)/.exec(st.backgroundColor || '');
+    const alpha = m ? (m[1].split(',')[3] === undefined ? 1 : parseFloat(m[1].split(',')[3])) : 0;
+    const op = parseFloat(st.opacity || '1'), seen = alpha * (isFinite(op) ? op : 1);
+    return seen > 0.15 && seen < 0.97;    // part see-through, like a 50% white screen
+  }
+
+  const hidden = new Set();
   function hide(e, why) {
-    if (e.__vtvHidden) return;
-    e.__vtvHidden = 1;
     e.style.setProperty('display', 'none', 'important');
+    e.style.setProperty('visibility', 'hidden', 'important');
     e.style.setProperty('pointer-events', 'none', 'important');
-    try { console.log('[video tv] overlay removed (' + why + ')', e.tagName, e.className || ''); } catch (x) { }
+    if (hidden.has(e)) return;
+    hidden.add(e);
+    try { console.log('[video tv] overlay removed (' + why + ')', e.tagName, String(e.className || '').slice(0, 60)); } catch (x) { }
     for (const r of [document.documentElement, document.body]) {   // popups often lock scrolling
       if (r && getComputedStyle(r).overflow === 'hidden') r.style.setProperty('overflow', 'auto', 'important');
     }
   }
+  // The biggest thing around `hit` that still doesn't hold the player = the whole overlay.
+  function overlayRoot(hit, stopAt) {
+    let o = hit;
+    for (let p = parentOf(o); p && p.nodeType === 1 && p !== document.body && p !== document.documentElement; p = parentOf(p)) {
+      if (p === stopAt || holdsPlayer(p) || contains(p, stopAt)) break;
+      o = p;
+    }
+    return o;
+  }
+  // Is e on top of something else (not just the page's own layout)? Looks at what's underneath.
+  function onTopOfSomething(e, r) {
+    const pts = [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]];
+    for (const [fx, fy] of pts) {
+      const x = r.left + r.width * fx, y = r.top + r.height * fy;
+      if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue;
+      for (const u of document.elementsFromPoint(x, y)) {
+        if (u === e || contains(e, u) || contains(u, e) || isOurs(u)) continue;
+        if (u === document.body || u === document.documentElement) continue;
+        const ur = u.getBoundingClientRect();
+        if (area(ur) > 2500) return true;       // a real thing lies under it
+      }
+    }
+    return false;
+  }
+
   function sweep() {
-    if (document.fullscreenElement || !document.body) return;
-    const vw = innerWidth, vh = innerHeight, screenArea = vw * vh;
-    const medias = [...document.querySelectorAll('video,iframe')].map(m => ({ m, r: m.getBoundingClientRect() }))
-      .filter(x => x.r.width * x.r.height > screenArea * 0.04);
-    const boxes = medias.map(x => playerBox(x.m));
+    if (!document.body) return;
+    for (const e of hidden) if (e.isConnected && getComputedStyle(e).display !== 'none') hide(e, 'came back');
+    if (document.fullscreenElement) return;
+    const sa = innerWidth * innerHeight, scr = screenRect();
+    const players = [...document.querySelectorAll('video,iframe,embed,object,canvas')].filter(isPlayer)
+      .map(m => ({ m, r: m.getBoundingClientRect(), box: playerBox(m) }));
+
+    // 1) Whatever is on top of the video: check a few spots on it.
+    for (const p of players) {
+      const r = p.r;
+      for (const [fx, fy] of [[0.5, 0.5], [0.3, 0.3], [0.7, 0.3], [0.3, 0.7], [0.7, 0.7]]) {
+        const x = r.left + r.width * fx, y = r.top + r.height * fy;
+        if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue;
+        const stack = document.elementsFromPoint(x, y);
+        for (const u of stack) {
+          if (u === p.m || contains(u, p.m)) break;              // reached the player: nothing more on top
+          if (isOurs(u) || hidden.has(u)) continue;
+          const o = overlayRoot(u, p.m);
+          const ost = getComputedStyle(o), or = o.getBoundingClientRect();
+          if (contains(p.box, o)) {
+            // Inside the player's own box: its controls / poster stay, but a tinted screen
+            // over (nearly) the whole video goes.
+            if (coverage(or, r) > 0.8 && !o.querySelector('video') && lastingTint(o, ost)) hide(o, 'tinted screen over the video');
+            break;
+          }
+          if (coverage(or, r) > 0.3 || area(or) > sa * 0.2) hide(o, 'on top of the video');
+          break;
+        }
+      }
+    }
+
+    // 2) Big layers over the page (popups, backdrops, tinted screens), video or not.
     const els = document.body.getElementsByTagName('*');
     for (let i = 0; i < els.length && i < 8000; i++) {
       const e = els[i];
-      if (e.__vtvHidden || isOurs(e) || e.matches(MEDIA)) continue;
+      if (hidden.has(e) || isOurs(e)) continue;
       const st = getComputedStyle(e);
-      if (st.display === 'none' || st.visibility === 'hidden' || st.pointerEvents === 'none') continue;
-      if (st.position !== 'fixed' && st.position !== 'absolute' && st.position !== 'sticky') continue;
+      if (st.display === 'none' || st.visibility === 'hidden') continue;
+      if (st.position !== 'fixed' && st.position !== 'absolute') continue;
       const r = e.getBoundingClientRect();
-      if (r.width < 40 || r.height < 40) continue;
-      // 1) A layer over most of the screen (popup, backdrop, see-through click catcher).
-      if (st.position === 'fixed' && coverage(r, { left: 0, top: 0, right: vw, bottom: vh, width: vw, height: vh }) > 0.5) {
-        if (!hasMedia(e)) { hide(e, 'covers the screen'); continue; }
-      }
-      // 2) Something lying over the video that isn't part of the player.
-      for (let j = 0; j < medias.length; j++) {
-        const mr = medias[j].r;
-        if (coverage(r, mr) < 0.5 || hasMedia(e)) continue;
-        if (insideComposed(e, boxes[j])) continue;               // the player's own poster, controls...
-        const z = parseInt(st.zIndex, 10);
-        if (st.position === 'fixed' || z > 0 || e.tagName === 'A') { hide(e, 'covers the video'); break; }
-      }
+      if (coverage(r, scr) < 0.5) continue;
+      if (holdsPlayer(e)) continue;                               // the player (or the whole page) itself
+      if (players.some(p => contains(p.box, e))) continue;        // the player's own layers (rule 1 handles tints)
+      // Fixed to the screen: on top of anything, or tinted. Otherwise (absolute) only when it's
+      // tinted or forced to the very front (players build their own full-size layers like this).
+      const front = parseInt(st.zIndex, 10) >= 1000;
+      if (st.position === 'fixed' ? onTopOfSomething(e, r) || lastingTint(e, st)
+          : lastingTint(e, st) || (front && onTopOfSomething(e, r))) hide(e, 'covers the screen');
     }
   }
+  function soonAgain() { setTimeout(soon, 700); }
   let sweepQueued = false;
   function soon() { if (!sweepQueued) { sweepQueued = true; setTimeout(() => { sweepQueued = false; try { sweep(); } catch (x) { } }, 150); } }
   new MutationObserver(soon).observe(document, { childList: true, subtree: true, attributes: true, attributeFilter: ['style', 'class'] });
