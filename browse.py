@@ -44,7 +44,7 @@ ROWS = [
     {"id": "romance", "name": "Romance",
      "film": ["Q1054574"], "tv": ["Q84270297", "Q133308333"]},
     {"id": "family", "name": "Animation & Family",
-     "film": ["Q202866", "Q1361932"], "tv": ["Q581714"]},
+     "film": ["Q202866", "Q1361932"], "tv": ["Q581714", "Q1273568", "Q17113138"]},
 ]
 
 # Christmas row: (title, year). Each is checked against IMDb; misses are dropped.

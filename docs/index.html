@@ -689,7 +689,7 @@ let browse = [], genre = null, lastHomeFocus = null;
 fetch('browse.json?t=' + Date.now(), { cache: 'no-store' }).then(r => r.json()).then(d => {
   browse = (d.rows || []).filter(r => r && r.name && Array.isArray(r.items)).map(r => ({
     id: txt(r.id, 30), name: txt(r.name, 40),
-    items: r.items.filter(x => x && IMDB_ID.test(String(x.id))).slice(0, 40).map(x => ({
+    items: r.items.filter(x => x && IMDB_ID.test(String(x.id))).slice(0, 60).map(x => ({
       id: x.id, title: txt(x.title, 200), year: txt(x.year, 20), type: txt(x.type, 30), isTv: !!x.isTv,
       stars: txt(x.stars, 200), poster: imgUrl(x.poster) })),
   })).filter(r => r.items.length).slice(0, 20);
