@@ -55,6 +55,9 @@
   .chips { flex-wrap: wrap; }
   /* the chosen genre: a grid that goes down the page, most popular first */
   #home .row.genre { flex-wrap: wrap; overflow: visible; row-gap: 1.3rem; padding-bottom: 2rem; }
+  /* 6 posters across (the grid and the rows above it) */
+  #home .card { width: calc((90vw - 4.5rem) / 6 - 1px); }
+  #home .card .ct { font-size: .95rem; }
   .chip { flex: none; background: #161a20; border: 2px solid #2a313b; border-radius: 999px; padding: .35rem 1rem;
           font-size: .95rem; outline: none; color: #c9d0d8; }
   .chip.on { border-color: #555e6b; color: #fff; background: #1d222a; }
@@ -702,7 +705,7 @@ function card(item, badge) {
   const c = el('div', 'card');
   c.tabIndex = 0;
   c.item = item;
-  const p = img(item.poster, 300);
+  const p = img(item.poster, 450);
   if (p) { const im = el('img', 'pimg'); im.src = p; im.alt = ''; im.loading = 'lazy'; c.append(im); } else c.append(el('div', 'pimg'));
   if (badge) c.append(el('span', 'badge', badge));
   c.append(el('div', 'ct', item.title));
