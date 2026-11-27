@@ -36,7 +36,15 @@ allowed. If the file has a mistake the TV shows an error (it never quietly uses 
 
 ## Using it
 
-1. Type a title (the search opens on launch, or press **▲**). IMDb results appear as you type.
+1. The home screen (opens on launch, or press **▲**): **Continue watching** (your ★ shows, with the
+   episode that's up next), **★ Favorites**, and **Browse**: Trending, Christmas, Comedy, Action,
+   Crime, Thrillers, Horror, Sci-Fi, Romance, Animation & Family. Move over a genre to see it,
+   ▼ to its posters. Or type a title: IMDb results appear as you type.
+   The genre rows are rebuilt daily by `browse.py` (GitHub Action *Home screen rows*) from
+   Wikipedia's most-read pages (Trending), Wikidata (genres) and IMDb's public search (posters).
+   Edit the rows at the top of `browse.py`.
+   TV shows remember the episodes you opened: ✓ Watched in the episode picker, and the show
+   opens on the next episode (▶ Up next).
 2. Pick one: poster, rating, description, cast. TV shows get **Season / Episode** pickers
    (◀ ▶ to change, with episode names).
 3. **▶ Open**: the TV shows the video website (in a sandbox, see Safety). Use it like a

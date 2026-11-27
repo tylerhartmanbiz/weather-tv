@@ -23,7 +23,8 @@
   .overlay { position: fixed; inset: 0; background: rgba(13,15,18,.97); overflow: hidden; }
   /* search */
   #search { padding: 2.5rem 0; }
-  #search .col { width: 62vw; margin: 0 auto; }
+  #search .col { width: 90vw; margin: 0 auto; }
+  #search .col > * { max-width: 62vw; }
   #search h1 { font-size: 1.4rem; margin: 0 0 1rem; color: #9aa4b1; font-weight: 600; }
   #search h1 b { background: #f5c518; color: #000; padding: 0 .4rem; border-radius: .2rem; margin-right: .4rem; }
   #q { width: 100%; box-sizing: border-box; font-size: 1.5rem; padding: .8rem 1.2rem; border-radius: .8rem;
@@ -37,6 +38,28 @@
   #results .t { font-size: 1.15rem; font-weight: 600; }
   #results .m { font-size: .9rem; color: #9aa4b1; }
   #hint { color: #9aa4b1; font-size: .9rem; margin-top: 1rem; }
+  /* home: rows under the search box (only while the box is empty) */
+  #search { overflow-y: auto; scrollbar-width: none; }
+  #search::-webkit-scrollbar { display: none; }
+  #home { width: 90vw; margin: 1.6rem auto 0; }
+  #home .rowt { font-size: .85rem; text-transform: uppercase; letter-spacing: .08em; color: #9aa4b1; margin: 1.4rem 0 .6rem; }
+  #home .row { display: flex; gap: .9rem; overflow: hidden; padding: .35rem; margin: 0 -.35rem; }
+  .card { flex: none; width: 8.6vw; outline: none; border-radius: .55rem; position: relative; }
+  .card .pimg { width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: .55rem; background: #1d222a;
+                border: 3px solid transparent; box-sizing: border-box; display: block; }
+  .card:focus .pimg { border-color: #f5c518; }
+  .card .ct { font-size: .8rem; color: #9aa4b1; margin-top: .35rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card:focus .ct { color: #fff; }
+  .card .badge { position: absolute; left: .4rem; top: .4rem; background: #f5c518; color: #000; font-weight: 700;
+                 font-size: .75rem; padding: .05rem .45rem; border-radius: .3rem; }
+  .chips { flex-wrap: wrap; }
+  .chip { flex: none; background: #161a20; border: 2px solid #2a313b; border-radius: 999px; padding: .35rem 1rem;
+          font-size: .95rem; outline: none; color: #c9d0d8; }
+  .chip.on { border-color: #555e6b; color: #fff; background: #1d222a; }
+  .chip:focus { border-color: #f5c518; color: #fff; }
+  #home .empty { color: #555e6b; font-size: .9rem; padding: 1rem 0; }
+  #epmark { color: #f5c518; font-size: .9rem; font-weight: 600; white-space: nowrap; }
+  #epmark.seen { color: #7fd18b; }
   /* details */
   #detail { display: grid; grid-template-columns: 22vw 1fr; gap: 2.5rem; padding: 3rem 4rem; box-sizing: border-box; }
   #poster { width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: .8rem; background: #161a20; }
@@ -93,7 +116,7 @@
   <input id="q" type="search" placeholder="Type a title… (e.g. wolf of w)" maxlength="100" autocomplete="off">
   <ul id="results"></ul>
   <div id="hint">▼ to pick a result · OK to open · Back to close</div>
-</div></div>
+</div><div id="home"></div></div>
 
 <div id="detail" class="overlay hide">
   <img id="poster" alt="">
@@ -105,7 +128,7 @@
     <div class="sel" id="favBtn" tabindex="0"><span class="star">☆</span><span class="ftxt">Add to favorites</span></div>
     <div id="epick" class="hide">
       <div class="sel" id="selSeason" tabindex="0"><span class="lbl">Season</span><span class="arr">◀</span><span class="val" id="vSeason">1</span><span class="arr">▶</span></div>
-      <div class="sel" id="selEpisode" tabindex="0"><span class="lbl">Episode</span><span class="arr">◀</span><span class="val" id="vEpisode">1</span><span class="arr">▶</span><span id="eptitle"></span></div>
+      <div class="sel" id="selEpisode" tabindex="0"><span class="lbl">Episode</span><span class="arr">◀</span><span class="val" id="vEpisode">1</span><span class="arr">▶</span><span id="epmark"></span><span id="eptitle"></span></div>
     </div>
     <button id="openBtn">▶ Open</button>
     <div id="dcastwrap"><h3>Cast</h3><div id="cast"></div></div>
@@ -460,6 +483,7 @@ function play(i) {   // the default video list (videos.json)
 video.addEventListener('playing', () => { msg.style.display = 'none'; });
 video.addEventListener('error', () => { if (screen !== 'loader' && !hls) recover(null); });   // .mp4 / native HLS
 video.addEventListener('ended', () => {
+  if (opened && opened.isTv && progress[opened.id]) { const p = progress[opened.id]; pick.season = p.ns; pick.episode = p.ne; loadEpisodes(); }
   if (opened) { stopVideo(); openDetail(opened); }
   else if (videos.length) play(index + 1);
 });
@@ -478,12 +502,23 @@ function readFavCookies() {
   for (let i = 0; m['fav' + i]; i++) txt += m['fav' + i];
   try { const a = txt ? JSON.parse(decodeURIComponent(txt)) : []; return Array.isArray(a) ? a : []; } catch (e) { return []; }
 }
-function writeFavCookies() {
-  const parts = encodeURIComponent(JSON.stringify(favs)).match(/.{1,3500}/g) || [];
-  for (let i = 0; i < 20; i++) {
-    document.cookie = `fav${i}=${parts[i] || ''}; path=/weather-tv/; SameSite=Lax; Secure; ` +
+function writeCookies(prefix, value, n) {
+  const parts = encodeURIComponent(JSON.stringify(value)).match(/.{1,3500}/g) || [];
+  for (let i = 0; i < n; i++) {
+    document.cookie = `${prefix}${i}=${parts[i] || ''}; path=/weather-tv/; SameSite=Lax; Secure; ` +
       (parts[i] ? 'max-age=315360000' : 'max-age=0');
   }
+}
+function readCookies(prefix, fallback) {
+  const m = {};
+  document.cookie.split('; ').forEach(c => { const i = c.indexOf('='); if (i > 0) m[c.slice(0, i)] = c.slice(i + 1); });
+  let t = '';
+  for (let i = 0; m[prefix + i]; i++) t += m[prefix + i];
+  try { return t ? JSON.parse(decodeURIComponent(t)) : fallback; } catch (e) { return fallback; }
+}
+function writeFavCookies() {   // also the watch progress (name kept: called after each website visit)
+  writeCookies('fav', favs, 20);
+  writeCookies('prg', progress, 10);
 }
 async function loadFavs() {
   const fromCookies = readFavCookies();
@@ -507,6 +542,46 @@ async function saveFavs() {
     try { await fetch('api/store?key=favorites&value=' + encodeURIComponent(JSON.stringify(favs)), { cache: 'no-store' }); } catch (e) { }
   }
 }
+// ---------- TV shows: which episodes you opened (✓) and the one up next ----------
+// progress[showId] = { s, e: last opened, ns, ne: up next, t: when, seen: ["1:3", ...] }
+let progress = {};
+async function loadProgress() {
+  progress = readCookies('prg', {});
+  if (!nativeStore) return;
+  try {
+    const j = await (await fetch('api/store?key=progress', { cache: 'no-store' })).json();
+    const saved = j.value ? JSON.parse(j.value) : {};
+    if (saved && typeof saved === 'object' && Object.keys(saved).length) progress = saved;
+    else if (Object.keys(progress).length) saveProgress();   // move cookie copy over
+  } catch (e) { }
+}
+function saveProgress() {
+  const ids = Object.keys(progress).sort((a, b) => progress[b].t - progress[a].t);
+  ids.slice(60).forEach(id => delete progress[id]);           // keep the 60 most recent shows
+  writeCookies('prg', progress, 10);
+  if (nativeStore) fetch('api/store?key=progress&value=' + encodeURIComponent(JSON.stringify(progress)), { cache: 'no-store' }).catch(() => {});
+}
+const seen = (id, s, e) => !!(progress[id] && (progress[id].seen || []).includes(`${s}:${e}`));
+function nextEpisode(s, e) {
+  const eps = pick.episodes ? pick.episodes.map(x => x.episode) : null;
+  if (eps) {
+    const i = eps.indexOf(e);
+    if (i >= 0 && i < eps.length - 1) return [s, eps[i + 1]];
+    const ss = seasonOptions(), j = ss.indexOf(s);
+    if (j >= 0 && j < ss.length - 1) return [ss[j + 1], 1];
+    return [s, e];                                            // that was the last one
+  }
+  return [s, e + 1];
+}
+function recordProgress(show, s, e) {
+  const p = progress[show.id] || { seen: [] };
+  const [ns, ne] = nextEpisode(s, e);
+  p.seen = [...new Set([...(p.seen || []), `${s}:${e}`])].slice(-400);
+  Object.assign(p, { s, e, ns, ne, t: Date.now() });
+  progress[show.id] = p;
+  saveProgress();
+}
+
 function toggleFav() {
   if (!current) return;
   if (isFav(current.id)) favs = favs.filter(f => f.id !== current.id);
@@ -525,18 +600,121 @@ function renderFav() {
   $('favBtn').querySelector('.ftxt').textContent = on ? 'Favorite' : 'Add to favorites';
 }
 
+// ---------- home: continue watching, favorites, genres (while the search box is empty) ----------
+// The genre rows come from browse.json, rebuilt every day on GitHub (browse.py).
+const homeEl = $('home');
+let browse = [], genre = null, lastHomeFocus = null;
+fetch('browse.json?t=' + Date.now(), { cache: 'no-store' }).then(r => r.json()).then(d => {
+  browse = (d.rows || []).filter(r => r && r.name && Array.isArray(r.items)).map(r => ({
+    id: txt(r.id, 30), name: txt(r.name, 40),
+    items: r.items.filter(x => x && IMDB_ID.test(String(x.id))).slice(0, 40).map(x => ({
+      id: x.id, title: txt(x.title, 200), year: txt(x.year, 20), type: txt(x.type, 30), isTv: !!x.isTv,
+      stars: txt(x.stars, 200), poster: imgUrl(x.poster) })),
+  })).filter(r => r.items.length).slice(0, 20);
+  if (screen === 'search' && !q.value.trim() && !homeEl.contains(document.activeElement)) renderHome();
+}).catch(() => {});
+
+function card(item, badge) {
+  const c = el('div', 'card');
+  c.tabIndex = 0;
+  c.item = item;
+  const p = img(item.poster, 300);
+  if (p) { const im = el('img', 'pimg'); im.src = p; im.alt = ''; im.loading = 'lazy'; c.append(im); } else c.append(el('div', 'pimg'));
+  if (badge) c.append(el('span', 'badge', badge));
+  c.append(el('div', 'ct', item.title));
+  return c;
+}
+function section(title, row) { homeEl.append(el('div', 'rowt', title), row); return row; }
+function renderGenreRow() {
+  const row = homeEl.querySelector('.genre');
+  if (!row) return;
+  row.textContent = '';
+  const g = browse.find(r => r.id === genre);
+  (g ? g.items : []).forEach(x => row.append(card(x)));
+  row.scrollLeft = 0;
+}
+function renderHome() {
+  homeEl.textContent = '';
+  homeEl.classList.remove('hide');
+  const cont = favs.filter(f => f.isTv && progress[f.id]).sort((a, b) => progress[b.id].t - progress[a.id].t);
+  if (cont.length) {
+    const row = section('Continue watching', el('div', 'row'));
+    cont.forEach(f => { const p = progress[f.id]; row.append(card(f, `S${p.ns} E${p.ne}`)); });
+  }
+  if (favs.length) {
+    const row = section('★ Favorites', el('div', 'row'));
+    favs.forEach(f => row.append(card(f)));
+  }
+  if (browse.length) {
+    if (!browse.some(r => r.id === genre)) genre = browse[0].id;
+    const chips = section('Browse', el('div', 'row chips'));
+    browse.forEach(r => {
+      const c = el('div', 'chip' + (r.id === genre ? ' on' : ''), r.name);
+      c.tabIndex = 0; c.genre = r.id;
+      chips.append(c);
+    });
+    homeEl.append(el('div', 'row genre'));
+    renderGenreRow();
+  }
+  if (!homeEl.querySelector('[tabindex]')) homeEl.append(el('div', 'empty', 'Type a title to search.'));
+}
+function pickGenre(id) {
+  if (id === genre) return;
+  genre = id;
+  homeEl.querySelectorAll('.chip').forEach(c => c.classList.toggle('on', c.genre === id));
+  renderGenreRow();
+}
+homeEl.addEventListener('focusin', e => {
+  lastHomeFocus = e.target;
+  if (e.target.classList.contains('chip')) pickGenre(e.target.genre);   // moving over a genre shows it
+});
+const homeRows = () => [...homeEl.querySelectorAll('.row')].filter(r => r.querySelector('[tabindex]'));
+function focusIn(x) { x.focus({ preventScroll: true }); x.scrollIntoView({ block: 'center', inline: 'nearest' }); }
+function focusRow(row, from) {
+  const items = [...row.querySelectorAll('[tabindex]')];
+  if (!from) return focusIn(items[0]);
+  const fx = from.getBoundingClientRect().left + from.offsetWidth / 2;
+  const on = row.classList.contains('chips') && row.querySelector('.chip.on');   // back up to the chosen genre
+  focusIn(on || items.reduce((b, x) => Math.abs(x.getBoundingClientRect().left + x.offsetWidth / 2 - fx)
+    < Math.abs(b.getBoundingClientRect().left + b.offsetWidth / 2 - fx) ? x : b));
+}
+function homeKey(k, cur) {      // true = handled
+  const row = cur.closest('.row'), rows = homeRows(), ri = rows.indexOf(row);
+  const items = [...row.querySelectorAll('[tabindex]')], i = items.indexOf(cur);
+  if (k === 'ArrowLeft') { if (i > 0) focusIn(items[i - 1]); return true; }
+  if (k === 'ArrowRight') { if (i < items.length - 1) focusIn(items[i + 1]); return true; }
+  if (k === 'ArrowUp') {
+    if (ri > 0) focusRow(rows[ri - 1], cur); else { q.focus(); $('search').scrollTop = 0; }
+    return true;
+  }
+  if (k === 'ArrowDown') { if (ri < rows.length - 1) focusRow(rows[ri + 1], cur.genre ? null : cur); return true; }
+  if (k === 'Enter') {
+    if (cur.item) openDetail(cur.item);
+    else if (cur.genre && ri < rows.length - 1) focusRow(rows[ri + 1]);
+    return true;
+  }
+  return false;
+}
+
 // ---------- IMDb search ----------
+function showHome(on) {
+  homeEl.classList.toggle('hide', !on);
+  $('hint').classList.toggle('hide', on);
+  if (on) { results = []; resultsEl.textContent = ''; renderHome(); }
+}
 function openSearch() {
   show('search');
   if (!video.paused) video.pause();
-  if (!q.value.trim()) { results = favs.slice(); renderResults(); }   // empty box: your favorites
+  if (!q.value.trim()) showHome(true);
   q.focus();
+  $('search').scrollTop = 0;
 }
 
 q.addEventListener('input', () => {
   clearTimeout(searchTimer);
   const text = q.value.trim();
-  if (!text) { results = favs.slice(); renderResults(); return; }
+  if (!text) { searchToken++; showHome(true); return; }
+  showHome(false);
   searchTimer = setTimeout(() => runSearch(text), 250);
 });
 
@@ -614,6 +792,11 @@ function renderPick() {
   $('vEpisode').textContent = pick.episode;
   const ep = (pick.episodes || []).find(e => e.episode === pick.episode);
   $('eptitle').textContent = ep && ep.title ? ep.title : '';
+  const p = current && progress[current.id], mark = $('epmark');
+  const isSeen = !!current && seen(current.id, pick.season, pick.episode);
+  const isNext = !!p && p.ns === pick.season && p.ne === pick.episode && !isSeen;
+  mark.textContent = isSeen ? '✓ Watched' : isNext ? '▶ Up next' : '';
+  mark.classList.toggle('seen', isSeen);
 }
 async function loadEpisodes() {
   const token = ++pick.token, id = current.id, season = pick.season;
@@ -646,7 +829,11 @@ function changePick(which, dir) {
 async function openDetail(r) {
   const same = current && current.id === r.id;
   current = { ...r, cast: r.cast || (r.stars || '').split(',').map(n => ({ name: n.trim() })).filter(c => c.name) };
-  if (!same) { pick = { season: 1, episode: 1, episodes: null, token: pick.token + 1 }; if (r.isTv) loadEpisodes(); }
+  if (!same) {
+    const pr = r.isTv && progress[r.id];
+    pick = { season: pr ? pr.ns : 1, episode: pr ? pr.ne : 1, episodes: null, token: pick.token + 1 };
+    if (r.isTv) loadEpisodes();
+  }
   renderDetail({ ...current, loading: !current.plot });
   show('detail');
   (current.isTv && !same ? $('selSeason') : $('openBtn')).focus();
@@ -674,6 +861,7 @@ async function openVideo() {
   if (!current) return;
   const tv = !!current.isTv;
   const t = { ...current, label: tv ? `${current.title} · S${pick.season} E${pick.episode}` : current.title };
+  if (tv) { recordProgress(current, pick.season, pick.episode); renderPick(); }
   const token = ++openToken;
   stopVideo();
   $('ltitle').textContent = t.label;
@@ -733,8 +921,11 @@ document.addEventListener('keydown', e => {
   const k = e.key;
   if (screen === 'search') {
     const li = document.activeElement.closest && document.activeElement.closest('#results li[tabindex]');
+    const h = document.activeElement.closest && document.activeElement.closest('#home [tabindex]');
+    if (h) { if (homeKey(k, h)) e.preventDefault(); return; }
     if (document.activeElement === q) {
-      if (k === 'ArrowDown') { if (focusResult(0)) e.preventDefault(); }
+      if (k === 'ArrowDown' && !q.value.trim()) { const r = homeRows()[0]; if (r) { focusRow(r); e.preventDefault(); } }
+      else if (k === 'ArrowDown') { if (focusResult(0)) e.preventDefault(); }
       else if (k === 'Enter') { e.preventDefault(); if (results.length) openDetail(results[0]); else runSearch(q.value.trim()); }
       else if (k === 'Escape') closeOverlay();
       return; // other keys type into the box
@@ -791,14 +982,31 @@ function closeOverlay() {
 // Called by the TV app when Back is pressed. Return true = handled, false = exit the app.
 window.onTvBack = () => {
   if (screen === 'loader') { openToken++; stopVideo(); opened = null; show('detail'); $('openBtn').focus(); return true; }
-  if (screen === 'detail') { show('search'); const i = results.findIndex(r => current && r.id === current.id); if (!focusResult(i)) q.focus(); return true; }
+  if (screen === 'detail') {
+    show('search');
+    if (!q.value.trim()) {                  // home: refresh (favorites / up next may have changed), same spot
+      const at = lastHomeFocus, id = at && at.item && at.item.id, inGenre = at && at.closest && at.closest('.genre');
+      const title = at && at.closest && at.closest('.row') && at.closest('.row').previousElementSibling;
+      const which = title && title.classList.contains('rowt') ? title.textContent : null;
+      showHome(true);
+      let back = null;
+      if (id) {
+        const rows = [...homeEl.querySelectorAll(inGenre ? '.genre' : '.row')].filter(r =>
+          inGenre || (r.previousElementSibling && r.previousElementSibling.textContent === which));
+        back = rows.map(r => [...r.querySelectorAll('.card')].find(c => c.item.id === id)).find(Boolean);
+      }
+      if (back) focusIn(back); else { const r = homeRows()[0]; if (r) focusRow(r); else q.focus(); }
+      return true;
+    }
+    const i = results.findIndex(r => current && r.id === current.id); if (!focusResult(i)) q.focus(); return true;
+  }
   if (screen === 'search') { closeOverlay(); return true; }
   if (opened) { video.pause(); openDetail(opened); return true; }
   return false;
 };
 
 // ---------- start: default video list if there is one, otherwise straight to search ----------
-loadFavs().then(() => { if (screen === 'search' && !q.value.trim()) { results = favs.slice(); renderResults(); } });
+loadFavs().then(loadProgress).then(() => { if (screen === 'search' && !q.value.trim() && !homeEl.contains(document.activeElement)) renderHome(); });
 fetch('videos.json?t=' + Date.now(), { cache: 'no-store' })
   .then(r => r.json())
   .then(d => { videos = safeVideos(d); if (!videos.length) throw new Error('no videos'); play(0); })
