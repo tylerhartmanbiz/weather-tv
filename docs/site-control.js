@@ -179,6 +179,9 @@
       case 'back':
         if (!k.down) cmd('close');
         break;
+      case 'menu':                                   // remove what lies on top of the video
+        if (k.down && k.repeat === 0) { cmd('key', { code: 'escape' }); note('Removed what was on top of the video'); }
+        break;
     }
   }
 
@@ -208,6 +211,9 @@
         } else {
           okAction(() => cmd('tap'));
         }
+        break;
+      case 'menu':                          // remove what lies on top of the video (newer app)
+        if (k.down && k.repeat === 0 && state.nav) { cmd('key', { code: 'escape' }); note('Removed what was on top of the video'); }
         break;
       case 'playpause':                     // also grabs / lets go
         if (k.down && k.repeat === 0) cmd(holding ? 'up' : 'down');

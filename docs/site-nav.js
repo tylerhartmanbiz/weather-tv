@@ -353,20 +353,17 @@
     const a = area(m.getBoundingClientRect()), sa = innerWidth * innerHeight;
     return m.tagName === 'VIDEO' ? a > sa * 0.03 : a > sa * 0.25;
   }
-  // The main video(s): the biggest one on the page; while none has a real size yet (players
-  // often start at 0 x 0 and grow once the video loads), every video counts.
-  function mainVideos() {
-    const vs = [...document.querySelectorAll('video')];
-    const sizes = vs.map(v => area(v.getBoundingClientRect())), max = Math.max(0, ...sizes);
-    if (max < innerWidth * innerHeight * 0.03) return vs;
-    return vs.filter((v, i) => sizes[i] >= max * 0.5);
-  }
-  // Never hidden: what holds a main video, or a player-sized frame / canvas (a QR code drawn on
-  // a canvas, or a small ad frame, doesn't count: an overlay with one of those still goes).
   function holdsPlayer(e) {
     if (isPlayer(e)) return true;
-    for (const v of mainVideos()) if (v === e || contains(e, v)) return true;
-    for (const m of e.querySelectorAll('iframe,embed,object,canvas')) if (isPlayer(m)) return true;
+    for (const m of e.querySelectorAll('video,iframe,embed,object,canvas')) if (isPlayer(m)) return true;
+    return holdsMovie(e);
+  }
+  // The movie itself: a video longer than 5 minutes (ads and QR clips are short). Whatever holds
+  // it is never hidden, at any size (players often start at 0 x 0 and grow once it loads).
+  const isMovie = v => v.tagName === 'VIDEO' && isFinite(v.duration) && v.duration > 300;
+  function holdsMovie(e) {
+    if (isMovie(e)) return true;
+    for (const v of e.querySelectorAll('video')) if (isMovie(v)) return true;
     return false;
   }
   function playerBox(m) {     // the player's own box: the video's ancestor that's about its size
@@ -392,19 +389,21 @@
   }
   function tint(e, st) {
     if (st.backgroundImage && st.backgroundImage !== 'none') return false;   // a poster / picture
-    if (e.querySelector('img,video,picture')) return false;
+    if (e.querySelector('video')) return false;
+    // A poster (a picture filling most of it) isn't a tint; a small picture (a QR code) is fine.
+    const ea = area(e.getBoundingClientRect());
+    for (const i of e.querySelectorAll('img,picture')) if (area(i.getBoundingClientRect()) > ea * 0.5) return false;
     const m = /rgba?\(([^)]+)\)/.exec(st.backgroundColor || '');
     const alpha = m ? (m[1].split(',')[3] === undefined ? 1 : parseFloat(m[1].split(',')[3])) : 0;
     const op = parseFloat(st.opacity || '1'), seen = alpha * (isFinite(op) ? op : 1);
     return seen > 0.15 && seen < 0.97;    // part see-through, like a 50% white screen
   }
 
-  const hidden = new Set(), before = new Map(), framesAtHide = new WeakMap();
+  const hidden = new Set(), before = new Map();
   function hide(e, why) {
-    if (holdsPlayer(e)) return;                  // never the video (or what holds it)
+    if (holdsMovie(e)) return;                   // never the movie (or what holds it)
     if (!before.has(e)) before.set(e, ['display', 'visibility', 'pointer-events'].map(k =>
       [k, e.style.getPropertyValue(k), e.style.getPropertyPriority(k)]));
-    if (!hidden.has(e)) framesAtHide.set(e, e.querySelectorAll('iframe,embed,object').length);
     e.style.setProperty('display', 'none', 'important');
     e.style.setProperty('visibility', 'hidden', 'important');
     e.style.setProperty('pointer-events', 'none', 'important');
@@ -421,16 +420,11 @@
     before.delete(e);
     try { console.log('[video tv] overlay put back (' + why + ')', e.tagName); } catch (x) { }
   }
-  // A video started playing inside something hidden: that was the player, show it again.
-  document.addEventListener('playing', ev => {
-    for (const e of [...hidden]) if (contains(e, ev.target)) unhide(e, 'a video plays in it');
+  // The movie loaded or started inside something hidden: that was the player, show it again.
+  for (const t of ['loadedmetadata', 'durationchange', 'playing']) document.addEventListener(t, ev => {
+    if (!isMovie(ev.target)) return;
+    for (const e of [...hidden]) if (contains(e, ev.target)) unhide(e, 'the movie is in it');
   }, true);
-  // An opaque full-screen layer is more likely the player's own background than an ad.
-  function opaque(st) {
-    const m = /rgba?\(([^)]+)\)/.exec(st.backgroundColor || '');
-    const alpha = m ? (m[1].split(',')[3] === undefined ? 1 : parseFloat(m[1].split(',')[3])) : 0;
-    return alpha * parseFloat(st.opacity || '1') >= 0.97;
-  }
 
   // The biggest thing around `hit` that still doesn't hold the player = the whole overlay.
   function overlayRoot(hit, stopAt) {
@@ -461,10 +455,7 @@
     if (!document.body) return;
     for (const e of [...hidden]) {
       if (!e.isConnected) { hidden.delete(e); before.delete(e); continue; }
-      // Hidden display:none has no size, so look for media by tag: any video / frame in it = put back.
-      if (mainVideos().some(v => contains(e, v)) || e.querySelectorAll('iframe,embed,object').length > (framesAtHide.get(e) || 0)) {
-        unhide(e, 'it holds the player'); continue;
-      }
+      if (holdsMovie(e)) { unhide(e, 'it holds the movie'); continue; }
       if (getComputedStyle(e).display !== 'none') hide(e, 'came back');
     }
     if (document.fullscreenElement) return;
@@ -474,6 +465,7 @@
 
     // 1) Whatever is on top of the video: check a few spots on it.
     for (const p of players) {
+      if (p.m.getClientRects().length === 0) continue;          // hidden by now (e.g. an ad frame just removed)
       const r = p.r;
       for (const [fx, fy] of [[0.5, 0.5], [0.3, 0.3], [0.7, 0.3], [0.3, 0.7], [0.7, 0.7]]) {
         const x = r.left + r.width * fx, y = r.top + r.height * fy;
@@ -511,10 +503,58 @@
       // Fixed to the screen: on top of anything, or tinted. Otherwise (absolute) only when it's
       // tinted or forced to the very front (players build their own full-size layers like this).
       const front = parseInt(st.zIndex, 10) >= 1000;
-      if (st.position === 'fixed' ? (onTopOfSomething(e, r) && !opaque(st)) || lastingTint(e, st)
+      if (st.position === 'fixed' ? onTopOfSomething(e, r) || lastingTint(e, st)
           : lastingTint(e, st) || (front && onTopOfSomething(e, r))) hide(e, 'covers the screen');
     }
   }
+  // Menu ☰ on the remote (site-control.js presses Escape on the page): remove whatever lies on
+  // top of the player, no questions asked (never the movie / player itself). In every frame.
+  const zapped = new Set();
+  function zap() {
+    if (!document.body) return;
+    const isP = m => m && m.nodeType === 1 && (isPlayer(m) || isMovie(m));
+    let n = 0;
+    for (let i = 1; i <= 4; i++) for (let j = 1; j <= 4; j++) {
+      const stack = document.elementsFromPoint(innerWidth * i / 5, innerHeight * j / 5);
+      // The player at this spot = the bottom-most video / player-sized frame. Everything lying on
+      // top of it goes, even another big frame (ads come as full-screen frames too).
+      let k = -1;
+      for (let x = stack.length - 1; x >= 0; x--) if (isP(stack[x])) { k = x; break; }
+      if (k < 0) continue;
+      const player = stack[k];
+      for (let x = 0; x < k; x++) {
+        const u = stack[x];
+        if (isOurs(u) || hidden.has(u) || contains(u, player) || area(u.getBoundingClientRect()) < 1500) continue;
+        let o = u;                                                  // the whole layer, up to the player
+        for (let p = parentOf(o); p && p.nodeType === 1 && p !== document.body && p !== document.documentElement; p = parentOf(p)) {
+          if (contains(p, player) || holdsMovie(p)) break;
+          o = p;
+        }
+        if (holdsMovie(o) || hidden.has(o)) continue;
+        hide(o, 'Menu: removed by hand'); zapped.add(o); n++;
+      }
+    }
+    for (const f of document.querySelectorAll('iframe')) { try { f.contentWindow.postMessage({ [MSG]: 'zap' }, '*'); } catch (x) { } }
+    return n;
+  }
+  function unzap() { for (const e of zapped) if (hidden.has(e)) unhide(e, 'Menu: put back'); zapped.clear(); }
+  function menuKey() {             // remove what's on top; if there's nothing left, put it all back
+    if (zap() || !zapped.size) return;
+    unzap();
+    for (const f of document.querySelectorAll('iframe')) { try { f.contentWindow.postMessage({ [MSG]: 'unzap' }, '*'); } catch (x) { } }
+  }
+  window.addEventListener('message', ev => {
+    if (!ev.data || typeof ev.data !== 'object' || ev.source !== window.parent) return;
+    if (ev.data[MSG] === 'zap') zap(); else if (ev.data[MSG] === 'unzap') unzap();
+  });
+  window.addEventListener('keydown', ev => {
+    if (!ev.isTrusted || ev.key !== 'Escape') return;
+    ev.preventDefault(); ev.stopImmediatePropagation();
+    if (!TOP) { window.top.postMessage({ [MSG]: 'zaptop' }, '*'); return; }
+    menuKey();
+  }, true);
+  if (TOP) window.addEventListener('message', ev => { if (ev.data && typeof ev.data === 'object' && ev.data[MSG] === 'zaptop') menuKey(); });
+
   function soonAgain() { setTimeout(soon, 700); }
   let sweepQueued = false;
   function soon() { if (!sweepQueued) { sweepQueued = true; setTimeout(() => { sweepQueued = false; try { sweep(); } catch (x) { } }, 150); } }
