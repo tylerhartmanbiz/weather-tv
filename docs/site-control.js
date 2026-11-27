@@ -20,7 +20,8 @@
 
   // ---------- settings: change these freely ----------
   const S = {
-    autoClick: false,         // click the middle of the screen as soon as the page shows
+    autoClick: true,          // click the middle of the screen once, after the page shows...
+    autoClickAfterMs: 1000,   // ...this long after it shows
     autoHold: false,          // put the finger down in the middle as soon as the page shows (hold mode)
     autoHoldAfterMs: 150,     // ...this long after the page shows (after the click, if autoClick)
     holdToGrabMs: 800,        // hold OK this long to grab (start dragging)
@@ -33,6 +34,9 @@
     multiPressMs: 400,        // OK presses this close together count as a triple press (switch mode)
     modeHintMs: 3500,         // how long the "button mode" / "cursor mode" note shows
     startMode: 'buttons',     // 'buttons' or 'cursor': the mode the website opens in
+    // Sent to the app (newer app versions; older ones ignore it):
+    timeoutMin: 0,            // close the website by itself after this many minutes (0 = never)
+    sniff: false,             // also catch video links hidden without .m3u8/.mp4 in their name
   };
 
   // ---------- talking to the app ----------
@@ -131,7 +135,7 @@
     mode = 'cursor';
     okCount = 0; clearTimeout(pendingOk); pendingOk = null; pendingFns = []; clearTimeout(hintTimer);
     idle();
-    autoDone = false;
+    autoDone = false; clearTimeout(autoTimer);
     okStartedDrag = false;
     cmd('hello').then(s => {
       // Button mode needs the app version that can press keys on the website (s.nav), and the
@@ -143,12 +147,19 @@
     if (S.hint) cmd('hint', { text: S.hint });
   }
 
+  let autoTimer = null;
   function onVisible() {         // the website's page just appeared
     if ((!S.autoClick && !S.autoHold) || autoDone) return;
     autoDone = true;
-    cmd('center');
-    if (S.autoClick) cmd('tap');
-    if (S.autoHold) setTimeout(() => cmd('down'), S.autoHoldAfterMs);
+    clearTimeout(autoTimer);
+    autoTimer = setTimeout(() => {
+      if (!state.open) return;
+      if (S.autoClick) {           // one click in the middle (the cursor stays hidden in button mode)
+        const s = state, x = Math.round((s.w || 0) / 2), y = Math.round((s.h || 0) / 2);
+        if (s.w) cmd('tap', { x, y }); else { cmd('center'); cmd('tap'); }
+      }
+      if (S.autoHold) setTimeout(() => { cmd('center'); cmd('down'); }, S.autoHoldAfterMs);
+    }, S.autoClickAfterMs || 0);
   }
 
   function onButtonsKey(k) {     // button mode: real key presses on the page
@@ -213,6 +224,7 @@
       .then(src => src ? cmd('navscript', { src }) : null).catch(() => null);
   }
   sendNav();
+  cmd('settings', { timeoutMin: S.timeoutMin, sniff: S.sniff ? 1 : 0 });   // newer app: live settings
 
   window.SiteControl = {
     settings: S,

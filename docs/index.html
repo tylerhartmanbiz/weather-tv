@@ -112,8 +112,7 @@
 <div id="info" class="fade"><p id="title"></p><p id="desc"></p><div id="meta"></div></div>
 
 <div id="search" class="overlay hide"><div class="col">
-  <h1><b>IMDb</b>Search movies &amp; TV shows</h1>
-  <input id="q" type="search" placeholder="Type a title… (e.g. wolf of w)" maxlength="100" autocomplete="off">
+  <input id="q" type="search" placeholder="Search movies & TV shows" maxlength="100" autocomplete="off">
   <ul id="results"></ul>
   <div id="hint">▼ to pick a result · OK to open · Back to close</div>
 </div><div id="home"></div></div>
@@ -868,9 +867,19 @@ async function openVideo() {
   loader('Opening the website: start the video there (◀▲▼▶ move, OK click, Back cancel)…', null);
   show('loader');
   let d;
-  try { d = await openStream(t, pick.season, pick.episode); }
-  catch (e) { d = { error: (e && e.message) || 'Could not reach the video site.' }; }
-  if (token !== openToken) return;
+  const season = pick.season, episode = pick.episode;
+  for (;;) {
+    const since = Date.now();
+    try { d = await openStream(t, season, episode); }
+    catch (e) { d = { error: (e && e.message) || 'Could not reach the video site.' }; }
+    if (token !== openToken) return;
+    // Older app versions close the website by themselves after 15 minutes, even while a video
+    // plays inside it. If that's what happened (not Back), open the website again right away.
+    const timedOut = !safeVideos(d).length && d && /No video was started/.test(d.error || '')
+      && Date.now() - since > 14 * 60 * 1000;
+    if (!timedOut) break;
+    loader('Reopening the website…', null);
+  }
   const list = safeVideos(d);
   if (!list.length) { loader((d && typeof d.error === 'string' && d.error.slice(0, 200)) || 'No playable video found for this title.', null); return; }
   const item = list[0];

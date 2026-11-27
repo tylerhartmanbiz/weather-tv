@@ -197,6 +197,16 @@ final class Scraper {
      * moves between the site's buttons in button mode.
      */
     static volatile String navJs = null;
+
+    /**
+     * Live settings, sent by site-control.js (op=settings), so these never need a new APK:
+     *   timeoutMin  close the website by itself after this many minutes (0 = never; the default).
+     *               It used to be 15, which closed the website while you watched a video playing
+     *               inside it ("No video was started on the website").
+     *   sniff       also catch video links without .m3u8/.mp4 in their name (hidden playlists).
+     */
+    static volatile int timeoutMin = 0;
+    static volatile boolean sniffAlways = false;
     /** True when navJs reaches embedded frames too (document-start scripts), not just the main page. */
     static volatile boolean navAllFrames = false;
 
@@ -208,7 +218,8 @@ final class Scraper {
     /**
      * Show url (must be on `site`) full screen for you to use with the remote, and return once
      * `checker` accepted a video link the site asked for ("ok"), or you pressed Back
-     * ("cancelled"), the site crashed ("crashed"), or 15 minutes passed ("timeout").
+     * ("cancelled"), the site crashed ("crashed"), or timeoutMin passed ("timeout"; by default
+     * never, so a video playing inside the website is never cut off).
      * Call from a background thread.
      */
     static String browse(final Activity act, final FrameLayout root, final String url, final String site,
@@ -261,7 +272,8 @@ final class Scraper {
         shown.await(5, TimeUnit.SECONDS);
 
         String result = "timeout";
-        long end = SystemClock.uptimeMillis() + 15 * 60 * 1000L;
+        int limit = timeoutMin;
+        long end = limit > 0 ? SystemClock.uptimeMillis() + limit * 60 * 1000L : Long.MAX_VALUE;
         int tick = 0;
         while (SystemClock.uptimeMillis() < end) {
             if (s.ended != null) { result = s.ended; break; }
@@ -420,6 +432,14 @@ final class Scraper {
      */
     static String command(final Activity act, final FrameLayout root, final Uri u) throws InterruptedException {
         final String op = u.getQueryParameter("op") == null ? "" : u.getQueryParameter("op");
+        if ("settings".equals(op)) {                        // works with no website open
+            String t = u.getQueryParameter("timeoutMin"), sn = u.getQueryParameter("sniff");
+            if (t != null) { try { timeoutMin = Math.max(0, Math.min(24 * 60, Integer.parseInt(t))); } catch (Exception ignored) { } }
+            if (sn != null) sniffAlways = "1".equals(sn);
+            log("settings: timeoutMin=" + timeoutMin + " sniff=" + sniffAlways, null);
+            return "{\"open\":" + (current != null) + ",\"nav\":true,\"settings\":true,\"timeoutMin\":" + timeoutMin
+                    + ",\"sniff\":" + sniffAlways + "}";
+        }
         if ("navscript".equals(op)) {                       // works with no website open
             String src = u.getQueryParameter("src");
             navJs = src == null || src.isEmpty() || src.length() > 200000 ? null : src;
@@ -464,7 +484,7 @@ final class Scraper {
                 out[0] = "{\"open\":true,\"w\":" + c.getWidth() + ",\"h\":" + c.getHeight() + ",\"x\":" + c.x
                         + ",\"y\":" + c.y + ",\"dragging\":" + s.dragging + ",\"density\":"
                         + act.getResources().getDisplayMetrics().density + ",\"nav\":true,\"navReady\":" + (navJs != null)
-                        + ",\"navFrames\":" + navAllFrames + "}";
+                        + ",\"navFrames\":" + navAllFrames + ",\"settings\":true,\"timeoutMin\":" + timeoutMin + "}";
             } finally {
                 done.countDown();
             }
@@ -763,7 +783,7 @@ final class Scraper {
                                  final LinkedBlockingQueue<String> queue) {
         final AtomicInteger sentBack = new AtomicInteger(0);
         final boolean bare = Methods.on(Methods.BARE), loose = Methods.loose(), follow = Methods.follow();
-        final boolean letMedia = bare || Methods.on(Methods.LET_MEDIA), sniff = Methods.on(Methods.SNIFF);
+        final boolean letMedia = bare || Methods.on(Methods.LET_MEDIA), sniff = Methods.on(Methods.SNIFF) || sniffAlways;
         final boolean adblock = Methods.on(Methods.ADBLOCK), testing = Methods.testing();
         final WebView w = new WebView(act);
         boolean focus = Methods.on(Methods.FOCUS);
@@ -852,7 +872,7 @@ final class Scraper {
                 if ("data".equals(scheme) || "blob".equals(scheme)) return null;
                 String host = u.getHost() == null ? "" : u.getHost().toLowerCase(Locale.ROOT);
                 String path = u.getPath() == null ? "" : u.getPath().toLowerCase(Locale.ROOT);
-                if (sniff && "/__videotv_found__".equals(path)) {       // reported by SNIFF_JS
+                if ("/__videotv_found__".equals(path)) {       // reported by SNIFF_JS or site-nav.js (live)
                     String f = u.getQueryParameter("u");
                     if (f != null && f.startsWith("https://")) note(session, f, null, "hidden playlist, seen by the page hook");
                     return blocked();
