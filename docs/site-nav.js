@@ -85,6 +85,46 @@
     // again when focused. Anything else that's fully see-through doesn't.
     return true;
   }
+  // Something you'd actually want to press shows something: text, an icon (picture, svg, icon
+  // font), a label for screen readers, or it's a slider / text box / player frame. Empty boxes
+  // (click catchers, spacers, invisible layers) aren't buttons.
+  function hasContent(e) {
+    if (e.tagName === 'IFRAME' || isSlider(e) || /^(INPUT|SELECT|TEXTAREA|VIDEO|IMG|svg|CANVAS)$/.test(e.tagName)) return true;
+    if (isTimeline(e)) return true;              // a plain bar, but it's the video's timeline
+    if ((e.getAttribute('aria-label') || e.getAttribute('title') || e.getAttribute('alt') || '').trim()) return true;
+    if ((e.textContent || '').trim()) return true;
+    if (e.querySelector('img,svg,canvas,picture,video,input')) return true;
+    const st = getComputedStyle(e);
+    if (st.backgroundImage && st.backgroundImage !== 'none' && !/gradient/.test(st.backgroundImage)) return true;
+    if (st.maskImage && st.maskImage !== 'none' || st.webkitMaskImage && st.webkitMaskImage !== 'none') return true;
+    // Icon fonts draw the icon in ::before / ::after (on it or on a child)
+    const icon = x => { for (const ps of ['::before', '::after']) { const c = getComputedStyle(x, ps).content; if (c && c !== 'none' && c !== 'normal' && c !== '""' && c !== "''") return true; } return false; };
+    if (icon(e)) return true;
+    const kids = e.querySelectorAll('*');
+    for (let i = 0; i < kids.length && i < 30; i++) {
+      if (icon(kids[i])) return true;
+      const ks = getComputedStyle(kids[i]);
+      if (ks.backgroundImage && ks.backgroundImage !== 'none' && !/gradient/.test(ks.backgroundImage)) return true;
+      if (ks.maskImage && ks.maskImage !== 'none' || ks.webkitMaskImage && ks.webkitMaskImage !== 'none') return true;
+    }
+    return false;
+  }
+  // Not hidden underneath something else (an overlay, another layer): at least one spot of it
+  // is on top. (Auto-hiding player bars are see-through but still on top, so they count.)
+  function onTop(e, r) {
+    const pts = [[0.5, 0.5], [0.2, 0.5], [0.8, 0.5], [0.5, 0.2], [0.5, 0.8]];
+    let tried = 0;
+    for (const [fx, fy] of pts) {
+      const x = r.left + r.width * fx, y = r.top + r.height * fy;
+      if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) continue;
+      tried++;
+      let t = document.elementFromPoint(x, y);
+      while (t && t.shadowRoot) { const d = t.shadowRoot.elementFromPoint(x, y); if (!d || d === t) break; t = d; }
+      if (!t || t === e || contains(e, t) || contains(t, e) || isOurs(t)) return true;
+      if (getComputedStyle(t).pointerEvents === 'none') return true;
+    }
+    return tried === 0;
+  }
   function candidates() {
     const list = [], seen = new Set();
     for (const e of all(document, [])) {
@@ -102,6 +142,7 @@
       const r = e.getBoundingClientRect();
       if (!shown(e, r)) continue;
       if (e.tagName === 'IFRAME' && (r.width < 40 || r.height < 30)) continue;
+      if (!hasContent(e) || !onTop(e, r)) continue;
       list.push({ e, r });
       seen.add(e);
     }
@@ -136,19 +177,24 @@
   function score(from, r, dir) {
     const fcx = (from.left + from.right) / 2, fcy = (from.top + from.bottom) / 2;
     const cx = (r.left + r.right) / 2, cy = (r.top + r.bottom) / 2;
-    let major, minor, overlap;
+    let major, minor, overlap, same;
     if (dir === 'right' || dir === 'left') {
       if (dir === 'right' ? cx <= fcx + 1 || r.right <= from.right : cx >= fcx - 1 || r.left >= from.left) return Infinity;
       major = dir === 'right' ? Math.max(0, r.left - from.right) : Math.max(0, from.left - r.right);
       overlap = Math.min(r.bottom, from.bottom) - Math.max(r.top, from.top);
       minor = overlap > 0 ? 0 : Math.abs(cy - fcy);
+      // Same row (they share some height, or their middles line up): always before anything in
+      // another row, however far apart (e.g. audio on the left, settings on the far right).
+      const fh = from.bottom - from.top, h = r.bottom - r.top;
+      same = overlap > Math.min(fh, h) * 0.3 || Math.abs(cy - fcy) < Math.max(8, Math.min(fh, h) / 2);
     } else {
       if (dir === 'down' ? cy <= fcy + 1 || r.bottom <= from.bottom : cy >= fcy - 1 || r.top >= from.top) return Infinity;
       major = dir === 'down' ? Math.max(0, r.top - from.bottom) : Math.max(0, from.top - r.bottom);
       overlap = Math.min(r.right, from.right) - Math.max(r.left, from.left);
       minor = overlap > 0 ? 0 : Math.abs(cx - fcx);
+      same = true;                      // ▲ ▼: simply the nearest (a strict column rule skips close buttons)
     }
-    return major + minor * 3;
+    return (same ? 0 : 1e6) + major + minor * 3;
   }
   function best(from, dir, skip) {
     let top = null, s = Infinity;
