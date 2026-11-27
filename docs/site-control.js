@@ -65,8 +65,15 @@
     if (okCount < 3) return false;
     okCount = 0;
     clearTimeout(pendingOk); pendingOk = null; pendingFns = [];
-    if (mode === 'cursor' && !(state.nav && state.navReady)) {   // older app: only cursor mode
-      note('Button mode needs the newest app version');
+    if (mode === 'cursor' && !(state.nav && state.navReady)) {
+      if (state.nav) {           // app can do it, the page script just hadn't arrived: send it now
+        sendNav().then(() => cmd('hello')).then(s => {
+          note(s && s.navReady ? 'Button mode is ready from the next website you open'
+            : 'Button mode couldn\'t start (no connection?) · try again');
+        });
+      } else {                   // the app on the TV predates button mode (it can't reach into the website)
+        note('Button mode needs the app update from Nov 26 (one install, then it updates live)');
+      }
       return true;
     }
     setMode(mode === 'cursor' ? 'buttons' : 'cursor');
@@ -127,7 +134,10 @@
     autoDone = false;
     okStartedDrag = false;
     cmd('hello').then(s => {
-      // Button mode needs the app version that can press keys on the website (s.nav).
+      // Button mode needs the app version that can press keys on the website (s.nav), and the
+      // page script (site-nav.js). If the script never arrived (e.g. no connection at launch),
+      // send it again now; it applies to the next website opened.
+      if (s && s.nav && !s.navReady) sendNav();
       if (S.startMode === 'buttons' && s && s.nav && s.navReady) setMode('buttons');
     });
     if (S.hint) cmd('hint', { text: S.hint });
@@ -198,8 +208,11 @@
   }
 
   // The page script for the website (overlay remover + button mode), sent to the app once.
-  fetch('site-nav.js?t=' + Date.now(), { cache: 'no-store' }).then(r => r.ok ? r.text() : null)
-    .then(src => { if (src) cmd('navscript', { src }); }).catch(() => {});
+  function sendNav() {
+    return fetch('site-nav.js?t=' + Date.now(), { cache: 'no-store' }).then(r => r.ok ? r.text() : null)
+      .then(src => src ? cmd('navscript', { src }) : null).catch(() => null);
+  }
+  sendNav();
 
   window.SiteControl = {
     settings: S,
