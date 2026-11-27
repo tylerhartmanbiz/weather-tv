@@ -353,15 +353,20 @@
     const a = area(m.getBoundingClientRect()), sa = innerWidth * innerHeight;
     return m.tagName === 'VIDEO' ? a > sa * 0.03 : a > sa * 0.25;
   }
-  // Never hidden: anything with a video in it (any size: players often start tiny and grow
-  // once the video loads), or a frame / canvas / plugin that's more than a small ad.
+  // The main video(s): the biggest one on the page; while none has a real size yet (players
+  // often start at 0 x 0 and grow once the video loads), every video counts.
+  function mainVideos() {
+    const vs = [...document.querySelectorAll('video')];
+    const sizes = vs.map(v => area(v.getBoundingClientRect())), max = Math.max(0, ...sizes);
+    if (max < innerWidth * innerHeight * 0.03) return vs;
+    return vs.filter((v, i) => sizes[i] >= max * 0.5);
+  }
+  // Never hidden: what holds a main video, or a player-sized frame / canvas (a QR code drawn on
+  // a canvas, or a small ad frame, doesn't count: an overlay with one of those still goes).
   function holdsPlayer(e) {
-    if (e.tagName === 'VIDEO' || isPlayer(e)) return true;
-    if (e.querySelector('video')) return true;
-    const sa = innerWidth * innerHeight;
-    for (const m of e.querySelectorAll('iframe,embed,object,canvas')) {
-      if (isPlayer(m) || area(m.getBoundingClientRect()) > sa * 0.05) return true;
-    }
+    if (isPlayer(e)) return true;
+    for (const v of mainVideos()) if (v === e || contains(e, v)) return true;
+    for (const m of e.querySelectorAll('iframe,embed,object,canvas')) if (isPlayer(m)) return true;
     return false;
   }
   function playerBox(m) {     // the player's own box: the video's ancestor that's about its size
@@ -457,7 +462,7 @@
     for (const e of [...hidden]) {
       if (!e.isConnected) { hidden.delete(e); before.delete(e); continue; }
       // Hidden display:none has no size, so look for media by tag: any video / frame in it = put back.
-      if (e.querySelector('video') || e.querySelectorAll('iframe,embed,object').length > (framesAtHide.get(e) || 0)) {
+      if (mainVideos().some(v => contains(e, v)) || e.querySelectorAll('iframe,embed,object').length > (framesAtHide.get(e) || 0)) {
         unhide(e, 'it holds the player'); continue;
       }
       if (getComputedStyle(e).display !== 'none') hide(e, 'came back');
