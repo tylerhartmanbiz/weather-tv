@@ -23,7 +23,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 UA = "weather-tv-browse/1.0 (home screen rows; github.com/tylerhartmanbiz/weather-tv)"
-PER_ROW = 20
+PER_ROW = 40
 
 # Wikidata genre IDs. Films and TV series use different genre items.
 ROWS = [
@@ -59,6 +59,16 @@ CHRISTMAS = [
     ("Four Christmases", 2008), ("Last Christmas", 2019), ("Bad Santa", 2003),
     ("Scrooged", 1988), ("A Christmas Carol", 2009), ("Miracle on 34th Street", 1947),
     ("The Family Stone", 2005), ("Noelle", 2019), ("Gremlins", 1984),
+    ("Home Alone 3", 1997), ("The Santa Clause 2", 2002), ("Christmas with the Kranks", 2004),
+    ("Deck the Halls", 2006), ("Fred Claus", 2007), ("Santa Claus: The Movie", 1985),
+    ("The Night Before", 2015), ("Office Christmas Party", 2016), ("A Bad Moms Christmas", 2017),
+    ("Jingle Jangle: A Christmas Journey", 2020), ("Spirited", 2022), ("Single All the Way", 2021),
+    ("The Christmas Chronicles 2", 2020), ("A Boy Called Christmas", 2021), ("Happiest Season", 2020),
+    ("While You Were Sleeping", 1995), ("White Christmas", 1954), ("Holiday Inn", 1942),
+    ("Rise of the Guardians", 2012), ("Krampus", 2015), ("Black Christmas", 1974),
+    ("The Grinch Who Stole Christmas", 1966), ("Frosty the Snowman", 1969), ("A Charlie Brown Christmas", 1965),
+    ("Rudolph the Red-Nosed Reindeer", 1964), ("Love the Coopers", 2015), ("Christmas Vacation 2: Cousin Eddie's Island Adventure", 2003),
+    ("The Holiday Calendar", 2018), ("A Christmas Prince", 2017), ("The Princess Switch", 2018),
 ]
 
 FILM_TYPES = ["Q11424"]                                   # film
@@ -268,9 +278,9 @@ def main(path):
     films_by, shows_by = {}, {}
     try:
         print("Wikidata: films…", file=sys.stderr)
-        films_by = wd_genres("film", FILM_TYPES, 2000, 25)
+        films_by = wd_genres("film", FILM_TYPES, 2000, 15)
         print("Wikidata: TV series…", file=sys.stderr)
-        shows_by = wd_genres("tv", TV_TYPES, None, 15)
+        shows_by = wd_genres("tv", TV_TYPES, None, 10)
     except Exception as e:  # noqa: BLE001
         print(f"  Wikidata failed: {e}", file=sys.stderr)
     for r in ROWS:
@@ -281,8 +291,8 @@ def main(path):
             elif r.get("christmas"):
                 items = christmas()
             else:
-                films = resolve(ranked(films_by, r["film"]), 12)
-                shows = resolve(ranked(shows_by, r["tv"]), 8, {f["id"] for f in films})
+                films = resolve(ranked(films_by, r["film"]), 24)
+                shows = resolve(ranked(shows_by, r["tv"]), 16, {f["id"] for f in films})
                 items = interleave(films, shows)[:PER_ROW]
         except Exception as e:  # noqa: BLE001  (one broken row never stops the others)
             print(f"  row failed: {e}", file=sys.stderr)

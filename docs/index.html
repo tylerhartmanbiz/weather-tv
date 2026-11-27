@@ -61,9 +61,26 @@
   #epmark { color: #f5c518; font-size: .9rem; font-weight: 600; white-space: nowrap; }
   #epmark.seen { color: #7fd18b; }
   /* details */
-  #detail { display: grid; grid-template-columns: 22vw 1fr; gap: 2.5rem; padding: 3rem 4rem; box-sizing: border-box; }
+  #detail { display: grid; grid-template-columns: 22vw 1fr; gap: 2.5rem; padding: 3rem 4rem; box-sizing: border-box;
+            overflow-y: auto; scrollbar-width: none; align-items: start; }
+  #detail::-webkit-scrollbar { display: none; }
   #poster { width: 100%; aspect-ratio: 2/3; object-fit: cover; border-radius: .8rem; background: #161a20; }
-  #dbody { overflow: hidden; }
+  #dbody { min-width: 0; padding-bottom: 3rem; }
+  #dsub { color: #9aa4b1; font-size: .95rem; margin: -.4rem 0 1rem; }
+  #epinfo { max-width: 70ch; margin: -.2rem 0 1.2rem; }
+  #epinfo .eh { font-weight: 600; font-size: 1rem; }
+  #epinfo .em { color: #9aa4b1; font-size: .85rem; margin: .15rem 0 .35rem; }
+  #epinfo .es { color: #c9d0d8; font-size: .95rem; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 4;
+                -webkit-box-orient: vertical; overflow: hidden; }
+  .drow { display: flex; gap: .9rem; overflow: hidden; padding: .35rem; margin: 0 -.35rem 1.2rem; }
+  .person { flex: none; width: 7.2rem; outline: none; text-align: center; }
+  .person .pp { width: 6.4rem; height: 6.4rem; border-radius: 50%; object-fit: cover; object-position: 50% 20%;
+                background: #1d222a; border: 3px solid transparent; display: block; margin: 0 auto .45rem; box-sizing: border-box; }
+  .person:focus .pp { border-color: #f5c518; }
+  .person .n { font-size: .85rem; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .person .c { font-size: .75rem; color: #9aa4b1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .person:focus .n { color: #fff; }
+  .drow .card { width: 8vw; }
   #dtitle { font-size: 2.2rem; margin: 0; line-height: 1.15; }
   #dmeta { color: #9aa4b1; margin: .5rem 0 1rem; display: flex; flex-wrap: wrap; gap: .4rem 1rem; align-items: center; font-size: 1rem; }
   #dmeta .id { font-family: ui-monospace, Menlo, monospace; background: #1d222a; border: 1px solid #2a313b; border-radius: .3rem; padding: 0 .5rem; color: #e8ebef; }
@@ -91,11 +108,6 @@
              background: #f5c518; color: #000; outline: none; margin-bottom: 1.5rem; }
   #openBtn:focus { border-color: #fff; box-shadow: 0 0 0 .3rem rgba(245,197,24,.35); }
   h3 { font-size: .8rem; text-transform: uppercase; letter-spacing: .08em; color: #9aa4b1; margin: 0 0 .6rem; }
-  #cast { display: grid; grid-template-columns: repeat(3, 1fr); gap: .5rem; }
-  .actor { display: flex; gap: .6rem; align-items: center; background: #161a20; border-radius: .6rem; padding: .4rem; }
-  .actor img, .actor .ph { width: 2.4rem; height: 2.4rem; border-radius: 50%; object-fit: cover; background: #1d222a; flex: none; }
-  .actor .n { font-weight: 600; font-size: .9rem; }
-  .actor .c { color: #9aa4b1; font-size: .8rem; }
   /* loading / buffering */
   #loader { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1.2rem; text-align: center; }
   #ltitle { font-size: 1.8rem; font-weight: 700; }
@@ -124,13 +136,16 @@
     <div id="dmeta"></div>
     <div id="dpills" class="pills"></div>
     <p id="dplot"></p>
+    <div id="dsub"></div>
     <div class="sel" id="favBtn" tabindex="0"><span class="star">☆</span><span class="ftxt">Add to favorites</span></div>
     <div id="epick" class="hide">
       <div class="sel" id="selSeason" tabindex="0"><span class="lbl">Season</span><span class="arr">◀</span><span class="val" id="vSeason">1</span><span class="arr">▶</span></div>
       <div class="sel" id="selEpisode" tabindex="0"><span class="lbl">Episode</span><span class="arr">◀</span><span class="val" id="vEpisode">1</span><span class="arr">▶</span><span id="epmark"></span><span id="eptitle"></span></div>
     </div>
+    <div id="epinfo" class="hide"><div class="eh"></div><div class="em"></div><div class="es"></div></div>
     <button id="openBtn">▶ Open</button>
-    <div id="dcastwrap"><h3>Cast</h3><div id="cast"></div></div>
+    <div id="dcastwrap"><h3>Cast</h3><div id="cast" class="drow"></div></div>
+    <div id="dmorewrap"><h3>More like this</h3><div id="more" class="drow"></div></div>
   </div>
 </div>
 
@@ -166,7 +181,8 @@ let pick = { season: 1, episode: 1, episodes: null, token: 0 };   // TV shows: c
 
 // ---------- helpers ----------
 const img = (url, w) => /^https:\/\/m\.media-amazon\.com\//.test(url || '') ? url.replace(/\._V1_.*\.jpg$/, `._V1_UX${w}_.jpg`)
-  : /^https:\/\/static\.tvmaze\.com\//.test(url || '') ? url : '';
+  : /^https:\/\/static\.tvmaze\.com\//.test(url || '') ? url
+  : (url || '').startsWith('https://commons.wikimedia.org/wiki/Special:FilePath/') ? url.split('?')[0] + '?width=' + Math.min(400, w * 2) : '';
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
 function show(name) {
   screen = name;
@@ -228,8 +244,8 @@ async function getJson(url, post) {
 // ---------- IMDb (plain text fields only; images only from IMDb's image host) ----------
 const IMDB_ID = /^tt\d{7,10}$/;
 const txt = (s, n) => String(s ?? '').replace(/[\u0000-\u001f<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, n);
-const imgUrl = u => (typeof u === 'string' && u.length < 500 &&
-  (u.startsWith('https://m.media-amazon.com/') || u.startsWith('https://static.tvmaze.com/'))) ? u : '';
+const imgUrl = u => (typeof u === 'string' && u.length < 500 && !/[\s"'<>()\\]/.test(u) &&
+  (u.startsWith('https://m.media-amazon.com/') || u.startsWith('https://static.tvmaze.com/') || u.startsWith('https://commons.wikimedia.org/wiki/Special:FilePath/'))) ? u : '';
 const TYPES = { feature: 'Movie', 'TV series': 'TV Series', 'TV mini-series': 'TV Mini Series', 'TV movie': 'TV Movie',
                 'TV special': 'TV Special', short: 'Short', video: 'Video' };
 const SKIP = new Set(['videoGame', 'podcastSeries', 'podcastEpisode', 'musicVideo']);
@@ -282,11 +298,78 @@ async function mazeTitle(id) {
 async function mazeEpisodes(id, season) {
   const s = await mazeShow(id);
   return ((s._embedded || {}).episodes || []).filter(e => e.season === season && Number.isInteger(e.number))
-    .map(e => ({ episode: e.number, title: txt(e.name, 120) }));
+    .map(e => ({ episode: e.number, title: txt(e.name, 120), summary: plain(e.summary).slice(0, 700),
+                 airdate: txt(e.airdate, 10), runtime: Number.isFinite(e.runtime) ? e.runtime : null }));
+}
+
+// Movies: Wikidata (cast with photos, director, genres, runtime) + Wikipedia's summary as the
+// description. Free, public, no keys; the app allows these hosts via videos.json (live).
+const WD = 'https://query.wikidata.org/sparql?format=json&query=';
+const timed = (url, ms) => { const c = new AbortController(); const t = setTimeout(() => c.abort(), ms);
+  return fetch(url, { cache: 'force-cache', signal: c.signal }).finally(() => clearTimeout(t)); };
+const wdRows = async q => ((await (await timed(WD + encodeURIComponent(q), 12000)).json()).results || {}).bindings || [];
+const wdText = (b, k) => txt(b[k] && b[k].value, 200);
+const GENRE_SKIP = /^(film|feature film|television series|drama)$/i;
+async function wikiTitle(id) {
+  if (!IMDB_ID.test(id)) throw new Error('bad id');
+  const [info, cast] = await Promise.all([
+    wdRows(`SELECT ?article ?dur (GROUP_CONCAT(DISTINCT ?dl; separator="|") AS ?dirs) (GROUP_CONCAT(DISTINCT ?gl; separator="|") AS ?genres) WHERE {
+      ?item wdt:P345 "${id}". OPTIONAL { ?article schema:about ?item; schema:isPartOf <https://en.wikipedia.org/> }
+      OPTIONAL { ?item wdt:P2047 ?dur } OPTIONAL { ?item wdt:P57 ?d. ?d rdfs:label ?dl FILTER(LANG(?dl)="en") }
+      OPTIONAL { ?item wdt:P136 ?g. ?g rdfs:label ?gl FILTER(LANG(?gl)="en") } } GROUP BY ?article ?dur LIMIT 1`),
+    wdRows(`SELECT ?actor ?name ?img ?role ?role2 WHERE { ?item wdt:P345 "${id}"; p:P161 ?st. ?st ps:P161 ?actor.
+      ?actor rdfs:label ?name FILTER(LANG(?name)="en") OPTIONAL { ?actor wdt:P18 ?img }
+      OPTIONAL { ?st pq:P453 ?c. ?c rdfs:label ?role FILTER(LANG(?role)="en") } OPTIONAL { ?st pq:P4633 ?role2 } } LIMIT 60`),
+  ]);
+  const i = info[0] || {};
+  const seen = new Set(), people = [];
+  for (const b of cast) {
+    const name = wdText(b, 'name');
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    const file = b.img && /Special:FilePath\/(.+)$/.exec(b.img.value);
+    people.push({ name, character: wdText(b, 'role') || wdText(b, 'role2'),
+      photo: file ? imgUrl('https://commons.wikimedia.org/wiki/Special:FilePath/' + file[1]) : '' });
+  }
+  let plot = '';
+  const art = i.article && /^https:\/\/en\.wikipedia\.org\/wiki\/(.+)$/.exec(i.article.value);
+  if (art) {
+    try {
+      const sum = await (await timed('https://en.wikipedia.org/api/rest_v1/page/summary/' + art[1], 8000)).json();
+      plot = txt(sum.extract, 1000);
+    } catch (e) { }
+  }
+  const dur = i.dur ? parseFloat(i.dur.value) : NaN;
+  return {
+    plot, cast: people,
+    directors: (wdText(i, 'dirs') || '').split('|').filter(Boolean).slice(0, 3),
+    genres: (wdText(i, 'genres') || '').split('|').map(g => g.replace(/ (film|television series|series)$/i, ''))
+      .filter(g => g && !GENRE_SKIP.test(g)).map(g => g[0].toUpperCase() + g.slice(1)).slice(0, 5),
+    runtime: dur > 0 && dur < 1000 ? dur * 60 : null,
+  };
+}
+// Cast in a sensible order: the stars IMDb lists first, then people with a photo.
+function orderCast(people, stars) {
+  const top = (stars || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
+  const rank = c => { const i = top.indexOf(c.name.toLowerCase()); return i >= 0 ? i : c.photo ? 100 : 200; };
+  return people.map((c, i) => [c, i]).sort((a, b) => rank(a[0]) - rank(b[0]) || a[1] - b[1]).map(x => x[0]);
 }
 
 async function imdbTitle(id, isTv) {
   if (isTv) { try { return await mazeTitle(id); } catch (e) { /* fall back to IMDb */ } }
+  else {
+    // IMDb's details service usually refuses the app; Wikidata + Wikipedia fill in.
+    const [gql, wiki] = await Promise.allSettled([imdbGql(id), wikiTitle(id)]);
+    const g = gql.status === 'fulfilled' ? gql.value : null, w = wiki.status === 'fulfilled' ? wiki.value : null;
+    if (!g && !w) throw new Error('no data');
+    const out = { ...(w || {}) };
+    if (g) for (const [k, v] of Object.entries(g)) if (v !== '' && v != null && !(Array.isArray(v) && !v.length)) out[k] = v;
+    if (w && w.cast && w.cast.some(c => c.photo) && !(g && g.cast && g.cast.some(c => c.photo))) out.cast = w.cast;
+    return out;
+  }
+  return imdbGql(id);
+}
+async function imdbGql(id) {
   const t = ((await getJson(GQL, { query: TITLE_Q, variables: { id } })).data || {}).title;
   if (!t) throw new Error('no data');
   const y = t.releaseYear || {}, tv = !!(t.titleType || {}).canHaveEpisodes, eps = t.episodes || {};
@@ -765,15 +848,23 @@ function renderDetail(d) {
   if (d.isTv && d.episodes) pills.append(el('span', 'pill tv', `${d.episodes} episodes`));
   (d.genres || []).forEach(g => pills.append(el('span', 'pill', g)));
   $('dplot').textContent = d.plot || (d.loading ? 'Loading details…' : '');
-  const cast = $('cast'); cast.textContent = '';
-  (d.cast || []).slice(0, 12).forEach(c => {
-    const a = el('div', 'actor');
-    const ph = img(c.photo, 88);
-    if (ph) { const im = el('img'); im.src = ph; im.alt = ''; a.append(im); } else a.append(el('div', 'ph'));
-    const t = el('div'); t.append(el('div', 'n', c.name)); if (c.character) t.append(el('div', 'c', c.character));
-    a.append(t); cast.append(a);
+  $('dsub').textContent = (d.directors || []).length ? 'Directed by ' + d.directors.join(', ') : '';
+  // Cast: a row of photos (◀ ▶ to scroll). Keeps your place when details arrive.
+  const cast = $('cast'), had = cast.contains(document.activeElement) ? document.activeElement.dataset.i : null;
+  cast.textContent = '';
+  orderCast(d.cast || [], d.stars).slice(0, 30).forEach((c, i) => {
+    const a = el('div', 'person');
+    a.tabIndex = 0; a.dataset.i = i;
+    const ph = img(c.photo, 160);
+    if (ph) { const im = el('img', 'pp'); im.src = ph; im.alt = ''; im.loading = 'lazy'; im.onerror = () => im.removeAttribute('src'); a.append(im); }
+    else { const ini = el('div', 'pp'); ini.textContent = ''; a.append(ini); }
+    a.append(el('div', 'n', c.name));
+    if (c.character) a.append(el('div', 'c', c.character));
+    cast.append(a);
   });
+  if (had != null && cast.children[had]) cast.children[had].focus({ preventScroll: true });
   $('dcastwrap').classList.toggle('hide', !(d.cast || []).length);
+  renderMore(d);
   $('epick').classList.toggle('hide', !d.isTv);
   if (d.isTv) renderPick();
   renderFav();
@@ -796,6 +887,41 @@ function renderPick() {
   const isNext = !!p && p.ns === pick.season && p.ne === pick.episode && !isSeen;
   mark.textContent = isSeen ? '✓ Watched' : isNext ? '▶ Up next' : '';
   mark.classList.toggle('seen', isSeen);
+  // About this episode: name, date, length and what happens.
+  const info = $('epinfo');
+  info.classList.toggle('hide', !(ep && (ep.summary || ep.airdate)));
+  if (ep) {
+    info.querySelector('.eh').textContent = `S${pick.season} E${pick.episode}${ep.title ? ' · ' + ep.title : ''}`;
+    const date = ep.airdate ? new Date(ep.airdate + 'T12:00:00').toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }) : '';
+    info.querySelector('.em').textContent = [date, ep.runtime ? ep.runtime + 'm' : ''].filter(Boolean).join(' · ');
+    info.querySelector('.es').textContent = ep.summary || '';
+  }
+}
+
+// ---------- More like this: from the genre rows (browse.json) ----------
+const GENRE_ROWS = [[/comedy|sitcom/i, 'comedy'], [/action|adventure|superhero|war|western/i, 'action'], [/crime|police|gangster|heist/i, 'crime'],
+  [/thriller|mystery|suspense|spy|detective/i, 'thriller'], [/horror|supernatural/i, 'horror'], [/science|sci-fi|fantasy/i, 'scifi'],
+  [/romance|romantic/i, 'romance'], [/animat|family|children|kids/i, 'family'], [/christmas|holiday/i, 'christmas']];
+function moreLike(d) {
+  const rows = browse.filter(r => r.items.some(x => x.id === d.id));
+  for (const g of d.genres || []) for (const [re, id] of GENRE_ROWS) if (re.test(g)) { const r = browse.find(x => x.id === id); if (r && !rows.includes(r)) rows.push(r); }
+  const seenIds = new Set([d.id]), same = [], other = [];
+  for (const r of rows) for (const x of r.items) {
+    if (seenIds.has(x.id)) continue;
+    seenIds.add(x.id);
+    (x.isTv === !!d.isTv ? same : other).push(x);   // movies for a movie, shows for a show first
+  }
+  return [...same, ...other].slice(0, 24);
+}
+function renderMore(d) {
+  const row = $('more'), had = row.contains(document.activeElement) ? document.activeElement.item && document.activeElement.item.id : null;
+  const items = moreLike(d);
+  if (row.dataset.for === d.id && row.children.length === items.length) return;   // unchanged: keep your place
+  row.dataset.for = d.id;
+  row.textContent = '';
+  items.forEach(x => row.append(card(x)));
+  if (had) { const c = [...row.children].find(c => c.item.id === had); if (c) c.focus({ preventScroll: true }); }
+  $('dmorewrap').classList.toggle('hide', !items.length);
 }
 async function loadEpisodes() {
   const token = ++pick.token, id = current.id, season = pick.season;
@@ -825,7 +951,10 @@ function changePick(which, dir) {
   renderPick();
 }
 
-async function openDetail(r) {
+let detailStack = [];   // titles opened from "More like this": Back returns to them
+async function openDetail(r, fromMore) {
+  if (fromMore && current) detailStack.push({ item: current, pick: { ...pick } }); else if (!fromMore) detailStack = [];
+  $('detail').scrollTop = 0;
   const same = current && current.id === r.id;
   current = { ...r, cast: r.cast || (r.stars || '').split(',').map(n => ({ name: n.trim() })).filter(c => c.name) };
   if (!same) {
@@ -951,6 +1080,20 @@ document.addEventListener('keydown', e => {
   }
   if (screen === 'detail') {
     const order = current && current.isTv ? [$('favBtn'), $('selSeason'), $('selEpisode'), $('openBtn')] : [$('favBtn'), $('openBtn')];
+    const drows = [...$('detail').querySelectorAll('.drow')].filter(r => !r.parentNode.classList.contains('hide') && r.querySelector('[tabindex]'));
+    const inRow = document.activeElement.closest && document.activeElement.closest('.drow');
+    if (inRow) {                                       // cast / more-like-this rows
+      const items = [...inRow.querySelectorAll('[tabindex]')], j = items.indexOf(document.activeElement), ri = drows.indexOf(inRow);
+      if (k === 'ArrowLeft') { if (j > 0) focusIn(items[j - 1]); }
+      else if (k === 'ArrowRight') { if (j < items.length - 1) focusIn(items[j + 1]); }
+      else if (k === 'ArrowUp') { if (ri > 0) focusRow(drows[ri - 1], document.activeElement); else { order[order.length - 1].focus(); $('detail').scrollTop = 0; } }
+      else if (k === 'ArrowDown') { if (ri < drows.length - 1) focusRow(drows[ri + 1], document.activeElement); }
+      else if (k === 'Enter') { if (document.activeElement.item) openDetail(document.activeElement.item, true); }
+      else return;
+      e.preventDefault();
+      return;
+    }
+    if (k === 'ArrowDown' && document.activeElement === order[order.length - 1] && drows.length) { focusRow(drows[0]); e.preventDefault(); return; }
     let i = order.indexOf(document.activeElement);
     if (i < 0) { order[order.length - 1].focus(); i = order.length - 1; }
     const f = order[i];
@@ -991,6 +1134,15 @@ function closeOverlay() {
 // Called by the TV app when Back is pressed. Return true = handled, false = exit the app.
 window.onTvBack = () => {
   if (screen === 'loader') { openToken++; stopVideo(); opened = null; show('detail'); $('openBtn').focus(); return true; }
+  if (screen === 'detail' && detailStack.length) {   // back to the title you came from
+    const prev = detailStack.pop();
+    current = null;
+    openDetail(prev.item, 'back');
+    pick = { ...prev.pick, token: pick.token + 1 };
+    if (prev.item.isTv) loadEpisodes();
+    renderPick();
+    return true;
+  }
   if (screen === 'detail') {
     show('search');
     if (!q.value.trim()) {                  // home: refresh (favorites / up next may have changed), same spot

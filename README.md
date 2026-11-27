@@ -43,6 +43,10 @@ allowed. If the file has a mistake the TV shows an error (it never quietly uses 
    The genre rows are rebuilt daily by `browse.py` (GitHub Action *Home screen rows*) from
    Wikipedia's most-read pages (Trending), Wikidata (genres) and IMDb's public search (posters).
    Edit the rows at the top of `browse.py`.
+   A title's page: description, cast with photos (◀ ▶ to scroll), director, genres, runtime,
+   each episode's description / air date / length, and **More like this** (OK opens it, Back
+   returns). TV details come from TVmaze; movie details from Wikidata + Wikipedia (the app may
+   reach those hosts because `docs/videos.json` lists them).
    TV shows remember the episodes you opened: ✓ Watched in the episode picker, and the show
    opens on the next episode (▶ Up next).
 2. Pick one: poster, rating, description, cast. TV shows get **Season / Episode** pickers
