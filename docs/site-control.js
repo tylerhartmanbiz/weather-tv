@@ -23,6 +23,7 @@
   const S = {
     autoClick: true,          // click the middle of the screen once, after the page shows...
     autoClickAfterMs: 1000,   // ...this long after it shows
+    noClicksFirstMs: 2000,    // no clicks at all (yours or the auto click) this long after the website starts loading
     autoHold: false,          // put the finger down in the middle as soon as the page shows (hold mode)
     autoHoldAfterMs: 150,     // ...this long after the page shows (after the click, if autoClick)
     holdToGrabMs: 800,        // hold OK this long to grab (start dragging)
@@ -46,7 +47,11 @@
   let holding = false;          // finger down? (known right away, not only after the app answers)
   let swallow = null;          // a key whose press only revealed the cursor
   // Commands run one after another, in order (so a "down" never overtakes a "move").
+  let shownAt = 0;
+  const isClick = (op, params) => op === 'tap' || op === 'down' ||
+    (op === 'key' && params && (params.code === 'enter' || params.code === 'space'));
   function cmd(op, params) {
+    if (isClick(op, params) && Date.now() - shownAt < S.noClicksFirstMs) return chain;   // too soon: ignored
     if (op === 'down') holding = true;
     else if (op === 'up' || op === 'close') holding = false;
     const q = Object.entries(params || {}).map(([k, v]) => '&' + k + '=' + encodeURIComponent(v)).join('');
@@ -131,6 +136,7 @@
   }
 
   function onShown() {
+    shownAt = Date.now();
     holding = false;
     hiddenAt = null;
     mode = 'cursor';
@@ -160,7 +166,7 @@
         if (s.w) cmd('tap', { x, y }); else { cmd('center'); cmd('tap'); }
       }
       if (S.autoHold) setTimeout(() => { cmd('center'); cmd('down'); }, S.autoHoldAfterMs);
-    }, S.autoClickAfterMs || 0);
+    }, Math.max(S.autoClickAfterMs || 0, S.noClicksFirstMs - (Date.now() - shownAt) + 50));
   }
 
   function onButtonsKey(k) {     // button mode: real key presses on the page
