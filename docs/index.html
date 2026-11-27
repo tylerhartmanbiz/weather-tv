@@ -53,6 +53,8 @@
   .card .badge { position: absolute; left: .4rem; top: .4rem; background: #f5c518; color: #000; font-weight: 700;
                  font-size: .75rem; padding: .05rem .45rem; border-radius: .3rem; }
   .chips { flex-wrap: wrap; }
+  /* the chosen genre: a grid that goes down the page, most popular first */
+  #home .row.genre { flex-wrap: wrap; overflow: visible; row-gap: 1.3rem; padding-bottom: 2rem; }
   .chip { flex: none; background: #161a20; border: 2px solid #2a313b; border-radius: 999px; padding: .35rem 1rem;
           font-size: .95rem; outline: none; color: #c9d0d8; }
   .chip.on { border-color: #555e6b; color: #fff; background: #1d222a; }
@@ -752,13 +754,25 @@ homeEl.addEventListener('focusin', e => {
 });
 const homeRows = () => [...homeEl.querySelectorAll('.row')].filter(r => r.querySelector('[tabindex]'));
 function focusIn(x) { x.focus({ preventScroll: true }); x.scrollIntoView({ block: 'center', inline: 'nearest' }); }
-function focusRow(row, from) {
+// Rows can wrap onto several lines (the genre grid, the genre names): ▲ ▼ move a line at a time.
+const midX = x => x.getBoundingClientRect().left + x.offsetWidth / 2;
+const nearestX = (list, fx) => list.reduce((b, x) => Math.abs(midX(x) - fx) < Math.abs(midX(b) - fx) ? x : b);
+function lineOf(items, which) {       // the first / last visual line of a row
+  const tops = items.map(x => Math.round(x.getBoundingClientRect().top));
+  const t = which === 'last' ? Math.max(...tops) : Math.min(...tops);
+  return items.filter((x, i) => Math.abs(tops[i] - t) < 5);
+}
+function nextLine(items, cur, dir) {   // the item on the line above / below, nearest across
+  const ct = cur.getBoundingClientRect().top;
+  const other = items.filter(x => dir < 0 ? x.getBoundingClientRect().top < ct - 5 : x.getBoundingClientRect().top > ct + 5);
+  if (!other.length) return null;
+  return nearestX(lineOf(other, dir < 0 ? 'last' : 'first'), midX(cur));
+}
+function focusRow(row, from, up) {
   const items = [...row.querySelectorAll('[tabindex]')];
   if (!from) return focusIn(items[0]);
-  const fx = from.getBoundingClientRect().left + from.offsetWidth / 2;
   const on = row.classList.contains('chips') && row.querySelector('.chip.on');   // back up to the chosen genre
-  focusIn(on || items.reduce((b, x) => Math.abs(x.getBoundingClientRect().left + x.offsetWidth / 2 - fx)
-    < Math.abs(b.getBoundingClientRect().left + b.offsetWidth / 2 - fx) ? x : b));
+  focusIn(on || nearestX(lineOf(items, up ? 'last' : 'first'), midX(from)));
 }
 function homeKey(k, cur) {      // true = handled
   const row = cur.closest('.row'), rows = homeRows(), ri = rows.indexOf(row);
@@ -766,10 +780,17 @@ function homeKey(k, cur) {      // true = handled
   if (k === 'ArrowLeft') { if (i > 0) focusIn(items[i - 1]); return true; }
   if (k === 'ArrowRight') { if (i < items.length - 1) focusIn(items[i + 1]); return true; }
   if (k === 'ArrowUp') {
-    if (ri > 0) focusRow(rows[ri - 1], cur); else { q.focus(); $('search').scrollTop = 0; }
+    const t = nextLine(items, cur, -1);
+    if (t) focusIn(t);
+    else if (ri > 0) focusRow(rows[ri - 1], cur, true); else { q.focus(); $('search').scrollTop = 0; }
     return true;
   }
-  if (k === 'ArrowDown') { if (ri < rows.length - 1) focusRow(rows[ri + 1], cur.genre ? null : cur); return true; }
+  if (k === 'ArrowDown') {
+    const t = nextLine(items, cur, 1);
+    if (t && !cur.genre) focusIn(t);       // from a genre name, ▼ goes to that genre's posters
+    else if (ri < rows.length - 1) focusRow(rows[ri + 1], cur.genre ? null : cur);
+    return true;
+  }
   if (k === 'Enter') {
     if (cur.item) openDetail(cur.item);
     else if (cur.genre && ri < rows.length - 1) focusRow(rows[ri + 1]);
