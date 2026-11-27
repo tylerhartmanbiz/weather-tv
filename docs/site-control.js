@@ -29,7 +29,7 @@
     hint: '',                 // text for a bar at the bottom while the site is shown ('' = no bar)
     // Hide the round cursor after this long without a button press (null = always show).
     // The next arrow / OK press only brings it back, in the same place.
-    hideCursorAfterMs: 5000,
+    hideCursorAfterMs: 3000,
     multiPressMs: 400,        // OK presses this close together count as a triple press (switch mode)
     modeHintMs: 3500,         // how long the "button mode" / "cursor mode" note shows
     startMode: 'buttons',     // 'buttons' or 'cursor': the mode the website opens in
