@@ -22,8 +22,8 @@
   // ---------- settings: change these freely ----------
   const S = {
     autoClick: true,          // click the middle of the screen once, after the page shows...
-    autoClickAfterMs: 1000,   // ...this long after it shows
-    noClicksFirstMs: 2000,    // your clicks are ignored this long after the website starts loading (the auto click isn't)
+    autoClickAfterMs: 3000,   // ...this long after it shows (done with the cursor, in cursor mode)
+    noClicksFirstMs: 6000,    // your clicks are ignored this long after the website starts loading (the auto click isn't)
     autoHold: false,          // put the finger down in the middle as soon as the page shows (hold mode)
     autoHoldAfterMs: 150,     // ...this long after the page shows (after the click, if autoClick)
     holdToGrabMs: 800,        // hold OK this long to grab (start dragging)
@@ -100,7 +100,7 @@
     cmd('hint', { text });
     hintTimer = setTimeout(() => cmd('hint', { text: S.hint }), S.modeHintMs);
   }
-  function setMode(m) {
+  function setMode(m, quiet) {
     mode = m;
     clearTimeout(hideTimer);
     if (holding) cmd('up');
@@ -108,11 +108,11 @@
       if (!hiddenAt && state.w) hiddenAt = { x: state.x, y: state.y };
       if (state.w) cmd('cursor', { x: state.w + 500, y: state.h + 500 });   // cursor off screen
       cmd('focus');
-      note('Button mode: ◀ ▲ ▼ ▶ move between buttons · OK press · OK ×3 = cursor');
+      if (!quiet) note('Button mode: ◀ ▲ ▼ ▶ move between buttons · OK press · OK ×3 = cursor');
     } else {
       if (!reveal()) cmd('center');
       idle();
-      note('Cursor mode · OK ×3 = button mode');
+      if (!quiet) note('Cursor mode · OK ×3 = button mode');
     }
   }
 
@@ -161,9 +161,13 @@
     clearTimeout(autoTimer);
     autoTimer = setTimeout(() => {
       if (!state.open) return;
-      if (S.autoClick) {           // one click in the middle (the cursor stays hidden in button mode)
-        const s = state, x = Math.round((s.w || 0) / 2), y = Math.round((s.h || 0) / 2);
-        if (s.w) cmd('tap', { x, y }, true); else { cmd('center'); cmd('tap', null, true); }
+      if (S.autoClick) {           // one click in the middle, with the cursor (cursor mode for a moment)
+        const was = mode;
+        if (was === 'buttons') { mode = 'cursor'; hiddenAt = null; }
+        cmd('center');
+        cmd('tap', null, true);
+        if (was === 'buttons') setTimeout(() => { if (mode === 'cursor' && state.open) setMode('buttons', true); }, 700);
+        else idle();
       }
       if (S.autoHold) setTimeout(() => { cmd('center'); cmd('down', null, true); }, S.autoHoldAfterMs);
     }, S.autoClickAfterMs || 0);
