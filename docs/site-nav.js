@@ -285,7 +285,7 @@
   const fmt = t => { t = Math.max(0, Math.floor(t)); const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, x = t % 60;
     return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0'); };
   let bubble = null, bubbleTimer = null;
-  function showTime(v, delta) {      // a small "▶▶ 12:34 / 1:45:00" in the corner of the video
+  function showTime(v, delta, label) {      // a small "▶▶ 12:34 / 1:45:00" in the corner of the video
     try {
       if (!bubble || !bubble.isConnected) {
         bubble = document.createElement('div');
@@ -294,7 +294,7 @@
           'background:rgba(0,0,0,.75);color:#fff;font:600 22px system-ui,sans-serif;padding:8px 18px;border-radius:10px;pointer-events:none';
         (document.body || document.documentElement).appendChild(bubble);
       }
-      bubble.textContent = (delta < 0 ? '◀◀ ' : '▶▶ ') + fmt(v.currentTime) + ' / ' + fmt(v.duration);
+      bubble.textContent = (label || (delta < 0 ? '◀◀ ' : '▶▶ ')) + fmt(v.currentTime) + ' / ' + fmt(v.duration);
       bubble.style.display = 'block';
       clearTimeout(bubbleTimer);
       bubbleTimer = setTimeout(() => { if (bubble) bubble.style.display = 'none'; }, 1500);
@@ -309,6 +309,18 @@
     }
     for (const f of document.querySelectorAll('iframe')) { try { f.contentWindow.postMessage({ [MSG]: 'seek', delta }, '*'); } catch (x) { } }
   }
+  function playPauseHere() {
+    const v = theVideo();
+    if (v) { if (v.paused) v.play().catch(() => { }); else v.pause(); showTime(v, 0, v.paused ? '❚❚ ' : '▶ '); }
+    for (const f of document.querySelectorAll('iframe')) { try { f.contentWindow.postMessage({ [MSG]: 'pp' }, '*'); } catch (x) { } }
+  }
+  function playPause() { if (TOP) playPauseHere(); else window.top.postMessage({ [MSG]: 'pptop' }, '*'); }
+  window.addEventListener('message', ev => {
+    const d = ev.data;
+    if (!d || typeof d !== 'object') return;
+    if (d[MSG] === 'pp' && ev.source === window.parent) playPauseHere();
+    else if (d[MSG] === 'pptop' && TOP) playPauseHere();
+  });
   // Held down (presses close together): bigger steps. 10 s, then 20, 30, then 60 s.
   let lastSeek = 0, seekRun = 0;
   function seek(dir) {
@@ -326,22 +338,39 @@
     else if (d[MSG] === 'seektop' && TOP) seekHere(d.delta);
   });
   // A slider that's the video's timeline (not volume): wide, or named like one, or as long as the video.
+  // Many players' timelines aren't marked as sliders at all (just a bar you click), so it's
+  // also recognised by its name (on it or just around it: the bar, its handle, its track) or
+  // by its shape: a wide, thin bar.
+  function nameOf(e) {
+    const c = e.className && e.className.baseVal !== undefined ? e.className.baseVal : e.className;
+    return ((e.getAttribute && e.getAttribute('aria-label') || '') + ' ' + (typeof c === 'string' ? c : '') + ' ' + (e.id || '') +
+      ' ' + (e.getAttribute && e.getAttribute('data-plyr') || '')).toLowerCase();
+  }
+  const NOT_TIME = /volume|sound|audio|mute|bright|speed|caption|subtitle|quality|setting/;
+  const TIME = /seek|progress|scrub|timeline|time-?bar|time-?rail|time-?slider|position|playbar|track|rail|slider|buffer/;
   function isTimeline(e) {
-    if (!isSlider(e)) return false;
-    const name = ((e.getAttribute('aria-label') || '') + ' ' + (e.className && e.className.baseVal !== undefined ? e.className.baseVal : e.className || '') + ' ' + (e.id || '')).toLowerCase();
-    if (/volume|sound|audio|bright|speed/.test(name)) return false;
-    if (/seek|progress|time|scrub|timeline|position|track|bar/.test(name)) return true;
-    const max = +(e.getAttribute('aria-valuemax') || (e.tagName === 'INPUT' ? e.max : 0));
-    const v = theVideo();
-    if (v && max > 60 && Math.abs(max - v.duration) < 5) return true;
-    return e.getBoundingClientRect().width > innerWidth * 0.3;
+    if (!e || e.nodeType !== 1 || e.tagName === 'IFRAME' || e.tagName === 'VIDEO' || !theVideo()) return false;
+    const r = e.getBoundingClientRect();
+    let x = e;
+    for (let i = 0; i < 4 && x && x.nodeType === 1 && x !== document.body; i++, x = parentOf(x)) {
+      const n = nameOf(x);
+      if (NOT_TIME.test(n)) return false;
+      if (TIME.test(n) && x.getBoundingClientRect().width > innerWidth * 0.2) return true;
+    }
+    if (isSlider(e)) {
+      const max = +(e.getAttribute('aria-valuemax') || (e.tagName === 'INPUT' ? e.max : 0)), v = theVideo();
+      if (v && max > 60 && Math.abs(max - v.duration) < 5) return true;
+      return r.width > innerWidth * 0.3;
+    }
+    // A wide, thin bar in a page that has the movie.
+    return r.width > innerWidth * 0.35 && r.height > 0 && r.height <= Math.max(32, innerHeight * 0.06) && !!theVideo();
   }
 
   // ---------- keys ----------
   window.addEventListener('keydown', ev => {
     if (!ev.isTrusted) return;
     const dir = DIRS[ev.key];
-    const el = deepActive();
+    const el = current && current.isConnected && current.tagName !== 'IFRAME' ? current : deepActive();
     if ((dir || ev.key === 'Enter') && idle && current && current.isConnected && current.tagName !== 'IFRAME') {
       active();
       // Hidden: this press only shows the outline again (◀ ▶ on the timeline still seek at once).
@@ -373,6 +402,7 @@
       if (!t || isText(t) || t.tagName === 'SELECT') return;
       ev.preventDefault();
       ev.stopImmediatePropagation();
+      if (isTimeline(t)) { playPause(); return; }      // OK on the timeline: pause / play (no jump to the middle)
       if (isSlider(t)) { passSlider = passSlider === t ? null : t; ring(); return; }   // ◀ ▶: change it / go past it
       press(t);
     }
