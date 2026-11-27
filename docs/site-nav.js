@@ -192,6 +192,7 @@
     current = e;
     passSlider = null;
     lastRect = target.r;
+    active();
     focusEl(e);
     wake(e);
     ring();
@@ -341,6 +342,15 @@
     if (!ev.isTrusted) return;
     const dir = DIRS[ev.key];
     const el = deepActive();
+    if ((dir || ev.key === 'Enter') && idle && current && current.isConnected && current.tagName !== 'IFRAME') {
+      active();
+      // Hidden: this press only shows the outline again (◀ ▶ on the timeline still seek at once).
+      if (!(isTimeline(el) && (dir === 'left' || dir === 'right'))) {
+        ev.preventDefault(); ev.stopImmediatePropagation(); ring();
+        return;
+      }
+    }
+    if (dir || ev.key === 'Enter') active();
     if (dir) {
       if (dir === 'left' || dir === 'right') {
         if (isTimeline(el) && el !== passSlider) {       // the timeline: we move the video ourselves
@@ -384,8 +394,29 @@
   }
 
   // ---------- the blue outline around the chosen button ----------
-  let box = null;
+  // Hidden after 3 s without a key press (like the cursor in cursor mode); the next press only
+  // brings it back, in the same place.
+  const HIDE_AFTER_MS = 3000;
+  let box = null, lastActive = Date.now(), idle = false;
+  function idleCss() {
+    if (document.getElementById('__vtvIdleCss') || !document.documentElement) return;
+    const st = document.createElement('style');
+    st.id = '__vtvIdleCss';
+    st.textContent = 'html.__vtvIdle *:focus,html.__vtvIdle *:focus-visible{outline:none !important;box-shadow:none !important}';
+    (document.head || document.documentElement).appendChild(st);
+  }
+  function active() {
+    lastActive = Date.now();
+    if (!idle) return;
+    idle = false;
+    document.documentElement.classList.remove('__vtvIdle');
+  }
   function ring() {
+    if (Date.now() - lastActive > HIDE_AFTER_MS) {
+      if (!idle) { idle = true; idleCss(); document.documentElement.classList.add('__vtvIdle'); }
+      if (box) box.style.display = 'none';
+      return;
+    }
     const e = current;
     const host = document.fullscreenElement || document.documentElement;
     if (!e || !e.isConnected || e.tagName === 'IFRAME' || !document.hasFocus()) { if (box) box.style.display = 'none'; return; }
