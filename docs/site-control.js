@@ -23,7 +23,7 @@
   const S = {
     autoClick: true,          // click the middle of the screen once, after the page shows...
     autoClickAfterMs: 1000,   // ...this long after it shows
-    noClicksFirstMs: 2000,    // no clicks at all (yours or the auto click) this long after the website starts loading
+    noClicksFirstMs: 2000,    // your clicks are ignored this long after the website starts loading (the auto click isn't)
     autoHold: false,          // put the finger down in the middle as soon as the page shows (hold mode)
     autoHoldAfterMs: 150,     // ...this long after the page shows (after the click, if autoClick)
     holdToGrabMs: 800,        // hold OK this long to grab (start dragging)
@@ -50,8 +50,8 @@
   let shownAt = 0;
   const isClick = (op, params) => op === 'tap' || op === 'down' ||
     (op === 'key' && params && (params.code === 'enter' || params.code === 'space'));
-  function cmd(op, params) {
-    if (isClick(op, params) && Date.now() - shownAt < S.noClicksFirstMs) return chain;   // too soon: ignored
+  function cmd(op, params, auto) {   // auto = the program's own click (never held back)
+    if (!auto && isClick(op, params) && Date.now() - shownAt < S.noClicksFirstMs) return chain;   // yours, too soon: ignored
     if (op === 'down') holding = true;
     else if (op === 'up' || op === 'close') holding = false;
     const q = Object.entries(params || {}).map(([k, v]) => '&' + k + '=' + encodeURIComponent(v)).join('');
@@ -163,10 +163,10 @@
       if (!state.open) return;
       if (S.autoClick) {           // one click in the middle (the cursor stays hidden in button mode)
         const s = state, x = Math.round((s.w || 0) / 2), y = Math.round((s.h || 0) / 2);
-        if (s.w) cmd('tap', { x, y }); else { cmd('center'); cmd('tap'); }
+        if (s.w) cmd('tap', { x, y }, true); else { cmd('center'); cmd('tap', null, true); }
       }
-      if (S.autoHold) setTimeout(() => { cmd('center'); cmd('down'); }, S.autoHoldAfterMs);
-    }, Math.max(S.autoClickAfterMs || 0, S.noClicksFirstMs - (Date.now() - shownAt) + 50));
+      if (S.autoHold) setTimeout(() => { cmd('center'); cmd('down', null, true); }, S.autoHoldAfterMs);
+    }, S.autoClickAfterMs || 0);
   }
 
   function onButtonsKey(k) {     // button mode: real key presses on the page
