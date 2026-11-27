@@ -269,6 +269,73 @@
     }
   });
 
+  // ---------- seeking the video (timeline ◀ ▶, and ⏪ ⏩ on the remote) ----------
+  // The video is often in another frame than the button you're on, so a seek goes to every
+  // frame of the website; each moves its own movie (the longest / biggest video it has).
+  function theVideo() {
+    let top = null, s = -1;
+    for (const v of document.querySelectorAll('video')) {
+      const d = isFinite(v.duration) ? v.duration : 0, a = area(v.getBoundingClientRect());
+      const sc = (d > 300 ? 1e9 : 0) + (v.paused ? 0 : 1e8) + a + d;
+      if (d > 60 && sc > s) { s = sc; top = v; }   // not short ad clips
+    }
+    return top;
+  }
+  const fmt = t => { t = Math.max(0, Math.floor(t)); const h = Math.floor(t / 3600), m = Math.floor(t / 60) % 60, x = t % 60;
+    return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0'); };
+  let bubble = null, bubbleTimer = null;
+  function showTime(v, delta) {      // a small "▶▶ 12:34 / 1:45:00" in the corner of the video
+    try {
+      if (!bubble || !bubble.isConnected) {
+        bubble = document.createElement('div');
+        bubble.id = '__vtvTime';
+        bubble.style.cssText = 'position:fixed;z-index:2147483647;left:50%;bottom:12%;transform:translateX(-50%);' +
+          'background:rgba(0,0,0,.75);color:#fff;font:600 22px system-ui,sans-serif;padding:8px 18px;border-radius:10px;pointer-events:none';
+        (document.body || document.documentElement).appendChild(bubble);
+      }
+      bubble.textContent = (delta < 0 ? '◀◀ ' : '▶▶ ') + fmt(v.currentTime) + ' / ' + fmt(v.duration);
+      bubble.style.display = 'block';
+      clearTimeout(bubbleTimer);
+      bubbleTimer = setTimeout(() => { if (bubble) bubble.style.display = 'none'; }, 1500);
+    } catch (x) { }
+  }
+  function seekHere(delta) {
+    const v = theVideo();
+    if (v) {
+      v.currentTime = Math.max(0, Math.min(v.duration - 1, v.currentTime + delta));
+      showTime(v, delta);
+      wake(v);
+    }
+    for (const f of document.querySelectorAll('iframe')) { try { f.contentWindow.postMessage({ [MSG]: 'seek', delta }, '*'); } catch (x) { } }
+  }
+  // Held down (presses close together): bigger steps. 10 s, then 20, 30, then 60 s.
+  let lastSeek = 0, seekRun = 0;
+  function seek(dir) {
+    const now = Date.now();
+    seekRun = now - lastSeek < 450 ? seekRun + 1 : 0;
+    lastSeek = now;
+    const step = seekRun < 3 ? 10 : seekRun < 8 ? 20 : seekRun < 15 ? 30 : 60;
+    const delta = dir < 0 ? -step : step;
+    if (TOP) seekHere(delta); else window.top.postMessage({ [MSG]: 'seektop', delta }, '*');
+  }
+  window.addEventListener('message', ev => {
+    const d = ev.data;
+    if (!d || typeof d !== 'object' || typeof d.delta !== 'number' || !isFinite(d.delta) || Math.abs(d.delta) > 600) return;
+    if (d[MSG] === 'seek' && ev.source === window.parent) seekHere(d.delta);
+    else if (d[MSG] === 'seektop' && TOP) seekHere(d.delta);
+  });
+  // A slider that's the video's timeline (not volume): wide, or named like one, or as long as the video.
+  function isTimeline(e) {
+    if (!isSlider(e)) return false;
+    const name = ((e.getAttribute('aria-label') || '') + ' ' + (e.className && e.className.baseVal !== undefined ? e.className.baseVal : e.className || '') + ' ' + (e.id || '')).toLowerCase();
+    if (/volume|sound|audio|bright|speed/.test(name)) return false;
+    if (/seek|progress|time|scrub|timeline|position|track|bar/.test(name)) return true;
+    const max = +(e.getAttribute('aria-valuemax') || (e.tagName === 'INPUT' ? e.max : 0));
+    const v = theVideo();
+    if (v && max > 60 && Math.abs(max - v.duration) < 5) return true;
+    return e.getBoundingClientRect().width > innerWidth * 0.3;
+  }
+
   // ---------- keys ----------
   window.addEventListener('keydown', ev => {
     if (!ev.isTrusted) return;
@@ -276,12 +343,21 @@
     const el = deepActive();
     if (dir) {
       if (dir === 'left' || dir === 'right') {
+        if (isTimeline(el) && el !== passSlider) {       // the timeline: we move the video ourselves
+          ev.preventDefault(); ev.stopImmediatePropagation();
+          wake(el); seek(dir === 'left' ? -1 : 1);
+          return;
+        }
         if (isText(el) || (isSlider(el) && el !== passSlider && !atEnd(el, dir))) { wake(el); return; }  // the site changes it
       }
       if (el && el.tagName === 'SELECT') return;
       ev.preventDefault();
       ev.stopImmediatePropagation();
       move(dir, null);
+    } else if (ev.key === 'PageUp' || ev.key === 'PageDown') {   // ⏪ ⏩ on the remote (sent by site-control.js)
+      ev.preventDefault();
+      ev.stopImmediatePropagation();
+      seek(ev.key === 'PageUp' ? -1 : 1);
     } else if (ev.key === 'Enter') {
       const t = current && current.isConnected && current.tagName !== 'IFRAME' ? current : el;
       if (!t || isText(t) || t.tagName === 'SELECT') return;

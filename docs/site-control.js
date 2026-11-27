@@ -10,7 +10,8 @@
 //   button mode   no cursor: arrows jump between the site's own buttons (play, timeline, captions,
 //                 settings...), like a TV browser. On a timeline / volume slider, ◀ ▶ change it
 //                 and ▲ ▼ leave it (OK on a slider: ◀ ▶ go past it). OK presses the outlined button.
-//                 ⏪ ⏩ jump to the previous / next button in page order.
+//                 ⏪ ⏩ rewind / fast-forward the video (both modes; held = faster). Menu ☰ removes
+//                 whatever lies on top of the video (press again to put it back).
 //                 How it finds the buttons: site-nav.js, which the app puts into the website. That
 //                 file also removes overlays (popups, ad layers over the video) in both modes.
 //
@@ -173,8 +174,8 @@
       case 'playpause':
         if (k.down && k.repeat === 0) cmd('key', { code: 'space' });
         break;
-      case 'rewind': case 'forward':                 // jump through the buttons in page order
-        if (k.down) cmd('key', { code: 'tab', shift: k.key === 'rewind' ? 1 : 0 });
+      case 'rewind': case 'forward':                 // ⏪ ⏩: rewind / fast-forward the video (held = faster)
+        if (k.down) cmd('key', { code: k.key === 'rewind' ? 'pageup' : 'pagedown' });
         break;
       case 'back':
         if (!k.down) cmd('close');
@@ -211,6 +212,9 @@
         } else {
           okAction(() => cmd('tap'));
         }
+        break;
+      case 'rewind': case 'forward':        // ⏪ ⏩: rewind / fast-forward the video (newer app)
+        if (k.down && state.nav) cmd('key', { code: k.key === 'rewind' ? 'pageup' : 'pagedown' });
         break;
       case 'menu':                          // remove what lies on top of the video (newer app)
         if (k.down && k.repeat === 0 && state.nav) { cmd('key', { code: 'escape' }); note('Removed what was on top of the video'); }

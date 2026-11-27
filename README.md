@@ -56,6 +56,9 @@ allowed. If the file has a mistake the TV shows an error (it never quietly uses 
    start the video there, the website closes and the app loads 30 seconds of the
    highest-quality stream with a **% counter** before it starts. It streams; nothing is saved.
 
+On the website: ⏪ ⏩ rewind / fast-forward (held = faster); in button mode ◀ ▶ on the timeline do the
+same; Menu ☰ removes whatever lies on top of the video (press again to put it back).
+
 Remote: ▲ search · ▼▲ move · ◀ ▶ change season/episode (or skip 10 s while watching) ·
 OK open / pause · Back goes back a screen · Menu ☰ reload.
 
