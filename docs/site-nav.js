@@ -122,10 +122,19 @@
       while (t && t.shadowRoot) { const d = t.shadowRoot.elementFromPoint(x, y); if (!d || d === t) break; t = d; }
       if (!t || t === e || contains(e, t) || contains(t, e) || isOurs(t)) return true;
       if (getComputedStyle(t).pointerEvents === 'none') return true;
+      // The video (or the player frame / its background) is what's "on top" when a player's
+      // auto-hidden control bar ignores the mouse: the control lies over the video, so it counts.
+      if (t.tagName === 'VIDEO' || isPlayer(t) || holdsPlayer(t)) return true;
     }
     return tried === 0;
   }
+  // Strict first (only things that show something and aren't covered). If that finds nothing at
+  // all, the looser rules, so the arrows always have something to go to.
   function candidates() {
+    const strict = candidatesBy(true);
+    return strict.length ? strict : candidatesBy(false);
+  }
+  function candidatesBy(strict) {
     const list = [], seen = new Set();
     for (const e of all(document, [])) {
       if (e.id === '__vtvRing') continue;
@@ -142,7 +151,7 @@
       const r = e.getBoundingClientRect();
       if (!shown(e, r)) continue;
       if (e.tagName === 'IFRAME' && (r.width < 40 || r.height < 30)) continue;
-      if (!hasContent(e) || !onTop(e, r)) continue;
+      if (strict && (!hasContent(e) || !onTop(e, r))) continue;
       list.push({ e, r });
       seen.add(e);
     }

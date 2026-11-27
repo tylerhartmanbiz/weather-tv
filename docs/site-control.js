@@ -35,7 +35,10 @@
     hideCursorAfterMs: 3000,
     multiPressMs: 400,        // OK presses this close together count as a triple press (switch mode)
     modeHintMs: 3500,         // how long the "button mode" / "cursor mode" note shows
-    startMode: 'buttons',     // 'buttons' or 'cursor': the mode the website opens in
+    startMode: 'cursor',      // 'buttons' or 'cursor': the mode the website opens in
+    buttonsAfterMs: 10000,    // ...then button mode this long after it starts loading (null = never;
+                              //    not if you already switched yourself with OK x3)
+    backTwiceMs: 2000,        // Back closes the website only when pressed twice within this long
     // Sent to the app (newer app versions; older ones ignore it):
     timeoutMin: 0,            // close the website by itself after this many minutes (0 = never)
     sniff: false,             // also catch video links hidden without .m3u8/.mp4 in their name
@@ -86,6 +89,7 @@
       }
       return true;
     }
+    switchedByHand = true;
     setMode(mode === 'cursor' ? 'buttons' : 'cursor');
     return true;
   }
@@ -135,6 +139,14 @@
     return true;
   }
 
+  let modeTimer = null, switchedByHand = false, backAt = 0;
+  // Back closes the website only when pressed twice (one press could be a mistake).
+  function backPressed() {
+    const now = Date.now();
+    if (now - backAt < S.backTwiceMs) { backAt = 0; cmd('close'); return; }
+    backAt = now;
+    note('Press Back again to close the website');
+  }
   function onShown() {
     shownAt = Date.now();
     holding = false;
@@ -151,6 +163,12 @@
       if (s && s.nav && !s.navReady) sendNav();
       if (S.startMode === 'buttons' && s && s.nav && s.navReady) setMode('buttons');
     });
+    clearTimeout(modeTimer); switchedByHand = false; backAt = 0;
+    if (S.buttonsAfterMs != null) modeTimer = setTimeout(() => {
+      if (switchedByHand || mode === 'buttons' || !state.open || !(state.nav && state.navReady)) return;
+      if (holding) cmd('up');
+      setMode('buttons');
+    }, S.buttonsAfterMs);
     if (S.hint) cmd('hint', { text: S.hint });
   }
 
@@ -188,7 +206,7 @@
         if (k.down) cmd('key', { code: k.key === 'rewind' ? 'pageup' : 'pagedown' });
         break;
       case 'back':
-        if (!k.down) cmd('close');
+        if (!k.down) backPressed();
         break;
       case 'menu':                                   // remove what lies on top of the video
         if (k.down && k.repeat === 0) { cmd('key', { code: 'escape' }); note('Removed what was on top of the video'); }
@@ -232,8 +250,8 @@
       case 'playpause':                     // also grabs / lets go
         if (k.down && k.repeat === 0) cmd(holding ? 'up' : 'down');
         break;
-      case 'back':                          // while holding: let go; otherwise close the website
-        if (!k.down) cmd(holding ? 'up' : 'close');
+      case 'back':                          // while holding: let go; otherwise close the website (press twice)
+        if (!k.down) { if (holding) cmd('up'); else backPressed(); }
         break;
     }
   }
