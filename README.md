@@ -39,7 +39,9 @@ allowed. If the file has a mistake the TV shows an error (it never quietly uses 
 1. The home screen (opens on launch, or press **▲**): **Continue watching** (your ★ shows, with the
    episode that's up next), **★ Favorites**, and **Browse**: Trending, Christmas, Comedy, Action,
    Crime, Thrillers, Horror, Sci-Fi, Romance, Animation & Family. Move over a genre to see it,
-   ▼ to its posters. Or type a title: IMDb results appear as you type.
+   ▼ to its posters: a grid, most popular first, that keeps loading as you scroll down (up to
+   300 per genre, in `docs/browse/<genre>.json`). Genres include Adult Swim (shows first aired
+   there) and Stand-Up (comedy specials). Or type a title: IMDb results appear as you type.
    The genre rows are rebuilt daily by `browse.py` (GitHub Action *Home screen rows*) from
    Wikipedia's most-read pages (Trending), Wikidata (genres) and IMDb's public search (posters).
    Edit the rows at the top of `browse.py`.

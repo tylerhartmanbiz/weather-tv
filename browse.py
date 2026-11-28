@@ -16,6 +16,7 @@ for searching) for its name, year, type, stars and poster. Anything not found th
 Edit ROWS / CHRISTMAS below and push: the workflow runs again and the TV shows the new rows.
 """
 import json
+import os
 import sys
 import time
 import urllib.parse
@@ -23,7 +24,8 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 
 UA = "weather-tv-browse/1.0 (home screen rows; github.com/tylerhartmanbiz/weather-tv)"
-PER_ROW = 40
+PER_ROW = 40          # titles in browse.json (what the home screen shows first)
+FULL_ROW = 300        # titles in docs/browse/<row>.json (the grid keeps loading these as you scroll)
 
 # Wikidata genre IDs. Films and TV series use different genre items.
 ROWS = [
@@ -31,6 +33,8 @@ ROWS = [
     {"id": "christmas", "name": "Christmas", "christmas": True},
     {"id": "comedy", "name": "Comedy",
      "film": ["Q157443"], "tv": ["Q9335576", "Q170238", "Q859369"]},
+    {"id": "adultswim", "name": "Adult Swim", "adultswim": True},      # shows first aired on Adult Swim
+    {"id": "standup", "name": "Stand-Up", "standup": True},            # stand-up comedy specials
     {"id": "action", "name": "Action & Adventure",
      "film": ["Q188473", "Q319221"], "tv": ["Q343782", "Q56064758", "Q141622854"]},
     {"id": "crime", "name": "Crime",
@@ -73,7 +77,7 @@ CHRISTMAS = [
 
 FILM_TYPES = ["Q11424"]                                   # film
 TV_TYPES = ["Q5398426", "Q1259759", "Q581714"]           # television series, miniseries, animated series
-OK_KINDS = {"movie", "tvSeries", "tvMiniSeries", "tvMovie"}
+OK_KINDS = {"movie", "tvSeries", "tvMiniSeries", "tvMovie", "tvSpecial", "video"}
 TV_KINDS = {"tvSeries", "tvMiniSeries"}
 
 
@@ -124,6 +128,26 @@ def wd_genres(kind, types, since, min_links):
         imdb_id, k = b["imdb"]["value"], int(b["k"]["value"])
         best[gid][imdb_id] = max(k, best[gid].get(imdb_id, 0))
     return best
+
+
+def wd_simple(where, min_links=0):
+    """IMDb IDs matching a Wikidata pattern (?s), most Wikipedia languages first."""
+    q = f"""SELECT ?imdb (MAX(?k) AS ?links) WHERE {{
+      {where}
+      ?s wdt:P345 ?imdb ; wikibase:sitelinks ?k . FILTER(STRSTARTS(?imdb, "tt")) FILTER(?k >= {min_links})
+    }} GROUP BY ?imdb ORDER BY DESC(?links) LIMIT 2000"""
+    return [b["imdb"]["value"] for b in sparql(q)]
+
+
+def adult_swim():
+    """Shows first aired on Adult Swim (original broadcaster)."""
+    return wd_simple("?s wdt:P449 wd:Q379052 .")
+
+
+def standup():
+    """Stand-up comedy specials (not people, not TV series such as sketch shows)."""
+    return wd_simple("""VALUES ?g { wd:Q140299056 wd:Q145806 } ?s wdt:P136 ?g .
+      FILTER NOT EXISTS { ?s wdt:P31 wd:Q5 } FILTER NOT EXISTS { ?s wdt:P31 wd:Q5398426 }""")
 
 
 def ranked(by_genre, genres):
@@ -206,7 +230,7 @@ def imdb(id_):
 
 
 TYPE_NAMES = {"feature": "Movie", "TV series": "TV Series", "TV mini-series": "TV Mini Series",
-              "TV movie": "TV Movie"}
+              "TV movie": "TV Movie", "TV special": "TV Special", "video": "Special"}
 
 
 def entry(x):
@@ -258,6 +282,15 @@ def resolve(ids, limit=PER_ROW, skip=()):
     return out
 
 
+def interleave3(a, b):
+    """3 from a, then 2 from b, and so on (the rest of either at the end)."""
+    out, i, j = [], 0, 0
+    while i < len(a) or j < len(b):
+        out += a[i:i + 3]; i += 3
+        out += b[j:j + 2]; j += 2
+    return out
+
+
 def interleave(a, b):
     out = []
     for i in range(max(len(a), len(b))):
@@ -269,31 +302,48 @@ def interleave(a, b):
 
 
 def main(path):
+    full_dir = os.path.join(os.path.dirname(path), "browse")
+    os.makedirs(full_dir, exist_ok=True)
+    old = {}
     try:                                   # a row that fails today keeps yesterday's titles
         with open(path, encoding="utf-8") as f:
             old = {r["id"]: r["items"] for r in json.load(f).get("rows", [])}
     except Exception:  # noqa: BLE001
-        old = {}
+        pass
+    for r in ROWS:                         # yesterday's full lists: their titles needn't be looked up again
+        try:
+            with open(os.path.join(full_dir, r["id"] + ".json"), encoding="utf-8") as f:
+                items = json.load(f).get("items", [])
+            old[r["id"]] = items if len(items) > len(old.get(r["id"], [])) else old.get(r["id"], [])
+            for e in items:
+                if e.get("id") and e.get("poster"):
+                    IMDB_CACHE.setdefault(e["id"], e)
+        except Exception:  # noqa: BLE001
+            pass
     rows = []
     films_by, shows_by = {}, {}
     try:
         print("Wikidata: films…", file=sys.stderr)
-        films_by = wd_genres("film", FILM_TYPES, 2000, 15)
+        films_by = wd_genres("film", FILM_TYPES, 2000, 6)
         print("Wikidata: TV series…", file=sys.stderr)
-        shows_by = wd_genres("tv", TV_TYPES, None, 10)
+        shows_by = wd_genres("tv", TV_TYPES, None, 4)
     except Exception as e:  # noqa: BLE001
         print(f"  Wikidata failed: {e}", file=sys.stderr)
     for r in ROWS:
         print(f"{r['name']}…", file=sys.stderr)
         try:
             if r.get("trending"):
-                items = resolve(trending())
+                items = resolve(trending(), FULL_ROW)
             elif r.get("christmas"):
                 items = christmas()
-            else:
-                films = resolve(ranked(films_by, r["film"]), 24)
-                shows = resolve(ranked(shows_by, r["tv"]), 16, {f["id"] for f in films})
-                items = interleave(films, shows)[:PER_ROW]
+            elif r.get("adultswim"):
+                items = resolve(adult_swim(), FULL_ROW)
+            elif r.get("standup"):
+                items = resolve(standup(), FULL_ROW)
+            else:                          # 3 films : 2 shows, each most popular first
+                films = resolve(ranked(films_by, r["film"]), FULL_ROW * 3 // 5)
+                shows = resolve(ranked(shows_by, r["tv"]), FULL_ROW * 2 // 5, {f["id"] for f in films})
+                items = interleave3(films, shows)[:FULL_ROW]
         except Exception as e:  # noqa: BLE001  (one broken row never stops the others)
             print(f"  row failed: {e}", file=sys.stderr)
             items = []
@@ -302,7 +352,12 @@ def main(path):
             print("  kept yesterday's titles", file=sys.stderr)
         print(f"  {len(items)} titles", file=sys.stderr)
         if items:
-            rows.append({"id": r["id"], "name": r["name"], "items": items})
+            row = {"id": r["id"], "name": r["name"], "items": items[:PER_ROW], "total": len(items)}
+            if len(items) > PER_ROW:
+                row["more"] = f"browse/{r['id']}.json"
+                with open(os.path.join(full_dir, r["id"] + ".json"), "w", encoding="utf-8") as f:
+                    json.dump({"id": r["id"], "items": items}, f, ensure_ascii=False, separators=(",", ":"))
+            rows.append(row)
     if len(rows) < 3:
         sys.exit("too few rows built; keeping the old browse.json")
     data = {"updated": datetime.now(timezone.utc).strftime("%Y-%m-%d"), "rows": rows}

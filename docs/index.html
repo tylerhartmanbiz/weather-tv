@@ -690,13 +690,14 @@ function renderFav() {
 // ---------- home: continue watching, favorites, genres (while the search box is empty) ----------
 // The genre rows come from browse.json, rebuilt every day on GitHub (browse.py).
 const homeEl = $('home');
+const cleanItems = (list, max) => (list || []).filter(x => x && IMDB_ID.test(String(x.id))).slice(0, max).map(x => ({
+  id: x.id, title: txt(x.title, 200), year: txt(x.year, 20), type: txt(x.type, 30), isTv: !!x.isTv,
+  stars: txt(x.stars, 200), poster: imgUrl(x.poster) }));
 let browse = [], genre = null, lastHomeFocus = null;
 fetch('browse.json?t=' + Date.now(), { cache: 'no-store' }).then(r => r.json()).then(d => {
   browse = (d.rows || []).filter(r => r && r.name && Array.isArray(r.items)).map(r => ({
-    id: txt(r.id, 30), name: txt(r.name, 40),
-    items: r.items.filter(x => x && IMDB_ID.test(String(x.id))).slice(0, 60).map(x => ({
-      id: x.id, title: txt(x.title, 200), year: txt(x.year, 20), type: txt(x.type, 30), isTv: !!x.isTv,
-      stars: txt(x.stars, 200), poster: imgUrl(x.poster) })),
+    id: txt(r.id, 30), name: txt(r.name, 40), items: cleanItems(r.items, 60),
+    more: /^browse\/[a-z0-9-]+\.json$/.test(r.more || '') ? r.more : null,
   })).filter(r => r.items.length).slice(0, 20);
   if (screen === 'search' && !q.value.trim() && !homeEl.contains(document.activeElement)) renderHome();
 }).catch(() => {});
@@ -712,13 +713,37 @@ function card(item, badge) {
   return c;
 }
 function section(title, row) { homeEl.append(el('div', 'rowt', title), row); return row; }
+// The genre grid never runs out (as far as the lists go: a few hundred per genre, most popular
+// first): it starts with what browse.json has, fetches the genre's full list, and adds more lines
+// whenever you get near the bottom.
+const GRID_FIRST = 60, GRID_MORE = 36;
 function renderGenreRow() {
   const row = homeEl.querySelector('.genre');
   if (!row) return;
   row.textContent = '';
   const g = browse.find(r => r.id === genre);
-  (g ? g.items : []).forEach(x => row.append(card(x)));
-  row.scrollLeft = 0;
+  if (!g) return;
+  g.items.slice(0, GRID_FIRST).forEach(x => row.append(card(x)));
+  if (g.more && !g.loading && !g.full) {
+    g.loading = true;
+    fetch(g.more + '?t=' + Date.now(), { cache: 'no-store' }).then(r => r.json()).then(d => {
+      const have = new Set(g.items.map(x => x.id));
+      g.items = g.items.concat(cleanItems(d.items, 1000).filter(x => !have.has(x.id)));
+      g.full = true;
+      const row = homeEl.querySelector('.genre');
+      if (row && genre === g.id && row.children.length < GRID_FIRST) moreGrid(GRID_FIRST - row.children.length);
+    }).catch(() => { }).finally(() => { g.loading = false; });
+  }
+}
+function moreGrid(n) {
+  const row = homeEl.querySelector('.genre'), g = browse.find(r => r.id === genre);
+  if (!row || !g) return;
+  const have = row.children.length;
+  g.items.slice(have, have + (n || GRID_MORE)).forEach(x => row.append(card(x)));
+}
+function nearGridEnd(c) {        // within the last 2 lines of what's shown: add more
+  const row = c.closest('.genre');
+  if (row && [...row.children].indexOf(c) >= row.children.length - 12) moreGrid();
 }
 function renderHome() {
   homeEl.textContent = '';
@@ -753,6 +778,7 @@ function pickGenre(id) {
 }
 homeEl.addEventListener('focusin', e => {
   lastHomeFocus = e.target;
+  if (e.target.classList.contains('card')) nearGridEnd(e.target);
   if (e.target.classList.contains('chip')) pickGenre(e.target.genre);   // moving over a genre shows it
 });
 const homeRows = () => [...homeEl.querySelectorAll('.row')].filter(r => r.querySelector('[tabindex]'));
@@ -1179,6 +1205,12 @@ window.onTvBack = () => {
         const rows = [...homeEl.querySelectorAll(inGenre ? '.genre' : '.row')].filter(r =>
           inGenre || (r.previousElementSibling && r.previousElementSibling.textContent === which));
         back = rows.map(r => [...r.querySelectorAll('.card')].find(c => c.item.id === id)).find(Boolean);
+        if (!back && inGenre) {                  // it was further down the grid: load down to it
+          const g = browse.find(r => r.id === genre), row = homeEl.querySelector('.genre');
+          while (!back && g && row && row.children.length < g.items.length) {
+            moreGrid(); back = [...row.querySelectorAll('.card')].find(c => c.item.id === id);
+          }
+        }
       }
       if (back) focusIn(back); else { const r = homeRows()[0]; if (r) focusRow(r); else q.focus(); }
       return true;
